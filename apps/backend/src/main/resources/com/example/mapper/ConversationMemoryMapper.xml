@@ -1,0 +1,213 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.mapper.ConversationMemoryMapper">
+
+    <resultMap id="ConversationMessageMap" type="com.example.service.impl.entity.ConversationMessageEntity">
+        <id property="id" column="id"/>
+        <result property="userId" column="user_id"/>
+        <result property="conversationId" column="conversation_id"/>
+        <result property="role" column="role"/>
+        <result property="content" column="content"/>
+        <result property="payload" column="payload"/>
+        <result property="messageTimestamp" column="message_timestamp"/>
+        <result property="state" column="state"/>
+        <result property="stepId" column="step_id"/>
+        <result property="seq" column="seq"/>
+        <result property="createdAt" column="created_at"/>
+    </resultMap>
+
+    <sql id="baseColumns">
+        <trim suffixOverrides=",">
+            id,
+            user_id,
+            conversation_id,
+            role,
+            content,
+            payload,
+            message_timestamp,
+            state,
+            step_id,
+            seq,
+            created_at
+        </trim>
+    </sql>
+
+    <select id="selectHistory" resultMap="ConversationMessageMap">
+        SELECT
+        <include refid="baseColumns"/>
+        FROM conversation_messages
+        WHERE user_id = #{userId}
+        AND conversation_id = #{conversationId}
+        AND state = 'FINAL'
+        ORDER BY created_at , seq , id
+    </select>
+
+    <delete id="deleteConversation">
+        DELETE
+        FROM conversation_messages
+        WHERE user_id = #{userId}
+          AND conversation_id = #{conversationId}
+    </delete>
+
+    <select id="selectByContent" resultMap="ConversationMessageMap">
+        SELECT
+        <include refid="baseColumns"/>
+        FROM conversation_messages
+        WHERE user_id = #{userId}
+        AND conversation_id = #{conversationId}
+        AND state = 'FINAL'
+        AND (
+        content LIKE CONCAT('%', #{query}, '%')
+        OR JSON_SEARCH(payload, 'one', CONCAT('%', #{query}, '%')) IS NOT NULL
+        )
+        ORDER BY created_at DESC, id DESC
+        LIMIT #{limit}
+    </select>
+
+
+    <select id="selectLatest" resultMap="ConversationMessageMap">
+        SELECT
+        <include refid="baseColumns"/>
+        FROM conversation_messages
+        WHERE user_id = #{userId}
+        AND conversation_id = #{conversationId}
+        AND state = 'FINAL'
+        ORDER BY created_at DESC, id DESC
+        LIMIT #{limit}
+    </select>
+
+    <insert id="upsertMessage">
+        INSERT INTO conversation_messages
+        (user_id, conversation_id, role, content, payload, message_timestamp,
+         step_id, seq, state, created_at)
+        VALUES (#{userId}, #{conversationId}, #{role}, #{content}, #{payload}, #{messageTimestamp},
+                #{stepId}, #{seq}, #{state}, CURRENT_TIMESTAMP(6))
+        ON DUPLICATE KEY UPDATE content           = VALUES(content),
+                                payload           = VALUES(payload),
+                                message_timestamp = VALUES(message_timestamp)
+    </insert>
+
+    <select id="selectFinalContext" resultType="map">
+        SELECT id, user_id, conversation_id, role, content, payload, message_timestamp,
+        step_id, seq, state, created_at
+        FROM conversation_messages
+        WHERE user_id = #{userId}
+        AND conversation_id = #{conversationId}
+        AND state = 'FINAL'                 <!-- 只给 FINAL -->
+        ORDER BY created_at ASC, seq ASC, id ASC
+        LIMIT #{limit}
+    </select>
+
+
+    <update id="promoteDraftsToFinal">
+        UPDATE conversation_messages
+        SET state = 'FINAL'
+        WHERE user_id = #{userId}
+          AND conversation_id = #{conversationId}
+          AND step_id = #{stepId}
+          AND state = 'DRAFT'
+    </update>
+
+    <delete id="deleteDraftsOlderThanHours">
+        DELETE
+        FROM conversation_messages
+        WHERE state = 'DRAFT'
+          AND created_at &lt; DATE_SUB(CURRENT_TIMESTAMP(6), INTERVAL #{hours} HOUR)
+    </delete>
+
+    <select id="selectStepIdByToolCallId" resultType="string">
+        SELECT step_id
+        FROM conversation_messages
+        WHERE user_id = #{userId}
+          AND conversation_id = #{conversationId}
+          AND JSON_SEARCH(payload, 'one', #{toolCallId}, NULL, '$**.tool_call_id') IS NOT NULL
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1
+    </select>
+
+
+    <!-- 取某 stepId 的最大 seq，用于多轮在同一 step 里顺延序号 -->
+    <select id="selectMaxSeq" resultType="int">
+        SELECT COALESCE(MAX(seq), 0)
+        FROM conversation_messages
+        WHERE user_id = #{userId}
+          AND conversation_id = #{conversationId}
+          AND step_id = #{stepId}
+    </select>
+
+    <select id="selectStepIdContext" resultType="map">
+        SELECT
+        role, content, payload, step_id, seq, created_at, state
+        FROM conversation_messages
+        WHERE user_id = #{userId}
+        AND conversation_id = #{conversationId}
+        AND step_id = #{stepId}
+        ORDER BY seq , created_at
+        <if test="limit &gt; 0">
+            LIMIT #{limit}
+        </if>
+    </select>
+
+    <select id="selectContextUptoStep" resultType="map">
+        SELECT
+        cm.id,
+        cm.user_id,
+        cm.conversation_id,
+        cm.step_id,
+        cm.role,
+        cm.content,
+        cm.payload,
+        cm.tool_name,
+        cm.tool_args,
+        cm.tool_result,
+        COALESCE(cm.message_timestamp, cm.created_at) AS ts,
+        COALESCE(cm.seq, 0) AS seq,
+        cm.state,
+        cm.created_at
+        FROM conversation_messages cm
+        LEFT JOIN (
+        SELECT MAX(COALESCE(message_timestamp, created_at)) AS boundary_ts
+        FROM conversation_messages
+        WHERE user_id = #{userId}
+        AND conversation_id = #{conversationId}
+        AND step_id = #{stepId}
+        ) b ON 1=1
+        WHERE cm.user_id = #{userId}
+        AND cm.conversation_id = #{conversationId}
+        AND COALESCE(cm.message_timestamp, cm.created_at)
+        <![CDATA[ <= ]]>
+        IFNULL(
+        b.boundary_ts,
+        IFNULL(
+        (SELECT MAX(COALESCE(message_timestamp, created_at))
+        FROM conversation_messages
+        WHERE user_id = #{userId}
+        AND conversation_id = #{conversationId}
+        AND state = 'FINAL'),
+        (SELECT MAX(COALESCE(message_timestamp, created_at))
+        FROM conversation_messages
+        WHERE user_id = #{userId}
+        AND conversation_id = #{conversationId})
+        )
+        )
+        ORDER BY ts ASC, seq ASC, cm.id ASC
+        <if test="limit != null and limit &gt; 0">
+            LIMIT #{limit}
+        </if>
+    </select>
+
+    <select id="selectCreatedAt" parameterType="map" resultType="java.time.LocalDateTime">
+  <![CDATA[
+        SELECT created_at
+        FROM conversation_messages
+        WHERE user_id = #{userId}
+          AND conversation_id = #{conversationId}
+          AND step_id = #{stepId}
+          AND seq = #{seq}
+        LIMIT 1
+        ]]>
+</select>
+
+
+</mapper>

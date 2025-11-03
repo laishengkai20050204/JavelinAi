@@ -1,0 +1,100 @@
+server:
+  port: 8080
+  http2:
+    enabled: true
+
+ai:
+  mode: OPENAI        # switch to OLLAMA for local models
+  model: ${AI_DEFAULT_MODEL:qwen3:8b}  # optional legacy override, defaults handled in code
+  stepjson:
+    heartbeat-seconds: 5       # NDJSON heartbeat interval (seconds)
+  think:
+    enabled: true               # enable optional thinking mode
+#    level: medium               # optional: send low/medium/high when the upstream supports it
+  tools:
+    max-loops: 10
+    dedup:
+      enabled: true
+      default-ttl-seconds: 600
+      ignore-args: ["timestamp","requestId","nonce"]
+    callStep:
+      ttl-minutes: 30
+      maximum-size: 10000
+    web-search: # ← 这里也从 web_search 改成 web-search
+      provider: serper
+      serper:
+        base-url: https://google.serper.dev   # 建议也用 kebab-case
+        api-key: ${SERPER_API_KEY}
+        timeout: 8s
+      defaults:
+        top-k: 5
+        lang: zh-CN
+        country: jp
+        safe: true
+    web-fetch:
+      allowed-schemes: [ http, https ]
+      timeout: 8s
+      max-in-memory-bytes: 524288   # 512KB
+      default-max-chars: 2000
+      user-agent: JavelinAI-WebFetch/1.0
+      ssrf-guard-enabled: true
+    python:
+      enabled: true
+      pythonCmd: python
+      timeout: 15s
+      maxOutputBytes: 65536
+      allowPip: false
+      useDocker: false       # 若你的宿主是 Linux 且装了 Docker，建议 true
+      dockerImage: python:3.11-slim
+      denyNetwork: true
+  memory:
+    storage: database        # set to in-memory to use the in-memory implementation
+    max-messages: 12
+    persistenceMode: draft-and-final   # draft-and-final | final-only
+    promoteDraftsOnFinish: true        # promote step DRAFT rows to FINAL when finished
+  client:
+    timeout-ms: 180000           # wait longer for upstream completion calls
+    stream-timeout-ms: 240000    # longer window for streaming responses
+    retry:
+      max-attempts: 3
+      backoff-ms: 500
+  debug:
+    log-raw-response: true
+    include-raw-in-gateway-json: true
+
+
+
+spring:
+  ai:
+    openai:
+      api-key: ${OPENAI_API_KEY:dummy}
+      # Spring AI appends the /v1/* paths automatically; point at the root host.
+      base-url: ${OPENAI_BASE_URL:http://localhost:11434}
+      chat:
+        options:
+          model: ${AI_OPENAI_MODEL:qwen3:8b}
+          temperature: 0.2
+    ollama:
+      base-url: ${OLLAMA_BASE_URL:http://localhost:11434}
+      chat:
+        options:
+          model: ${AI_OLLAMA_MODEL:qwen3:8b}
+          temperature: 0.2
+  main:
+    web-application-type: reactive
+
+  datasource:
+    url: jdbc:mysql://localhost:3306/java_ai?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai
+    username: root
+    password: 123
+    driver-class-name: com.mysql.cj.jdbc.Driver
+springdoc:
+  swagger-ui:
+    path: /swagger-ui
+
+logging:
+  level:
+    com.example: DEBUG
+
+mybatis:
+  mapper-locations: classpath*:com/example/mapper/*.xml
