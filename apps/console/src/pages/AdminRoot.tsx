@@ -1,7 +1,7 @@
 import React from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { motion } from "framer-motion";
-import { Rocket, Wrench, History, Github, Menu, ShieldCheck } from "lucide-react"; // ← 新增 ShieldCheck
+import { Rocket, Wrench, History, Github, Menu, ShieldCheck, Signal } from "lucide-react"; // ← 新增 Signal
 
 function useBreadcrumb() {
     const { pathname } = useLocation();
@@ -67,6 +67,7 @@ export default function AdminRoot() {
                         <SideLink to="/admin/replay"  icon={<History className="w-4 h-4" />}>Replay</SideLink>
                         <SideLink to="/admin/audit"   icon={<ShieldCheck className="w-4 h-4" />}>Audit</SideLink> {/* ← 新增 */}
                         <SideLink to="/admin/orchestrator" icon={<Rocket className="w-4 h-4" />}>Orchestrator</SideLink>
+                        <SideLink to="/admin/ndjson" icon={<Signal className="w-4 h-4" />}>NDJSON/SSE</SideLink>
                     </nav>
                 </motion.aside>
 

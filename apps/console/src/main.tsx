@@ -11,6 +11,7 @@ const AdminRoot = React.lazy(() => import("./pages/AdminRoot"));
 const RuntimeConfigPage = React.lazy(() => import("./pages/RuntimeConfigPage"));
 const ReplayCenterConsole = React.lazy(() => import("./components/ReplayCenterConsole"));
 const AuditConsolePage = React.lazy(() => import("./pages/AuditConsolePage"));
+const NdjsonSseDemoPage = React.lazy(() => import("./pages/NdjsonSseDemoPage"));
 
 function PageTransition({ children }: { children: React.ReactNode }) {
     const location = useLocation();
@@ -84,6 +85,17 @@ function RouterTree() {
                         <PageTransition>
                             <Suspense fallback={<div className="p-8 text-sm opacity-70">Loading orchestrator…</div>}>
                                 <StepOrchestratorPage />
+                            </Suspense>
+                        </PageTransition>
+                    }
+                />
+
+                <Route
+                    path="ndjson"
+                    element={
+                        <PageTransition>
+                            <Suspense fallback={<div className="p-8 text-sm opacity-70">Loading NDJSON/SSE…</div>}>
+                                <NdjsonSseDemoPage />
                             </Suspense>
                         </PageTransition>
                     }
