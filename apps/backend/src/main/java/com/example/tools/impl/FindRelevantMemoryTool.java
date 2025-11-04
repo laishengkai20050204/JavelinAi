@@ -3,11 +3,11 @@ package com.example.tools.impl;
 import com.example.ai.tools.AiToolComponent;
 import com.example.api.dto.ToolResult;
 import com.example.service.ConversationMemoryService;
+import com.example.config.EffectiveProps;
 import com.example.tools.AiTool;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
@@ -22,9 +22,7 @@ public class FindRelevantMemoryTool implements AiTool {
 
     private final ConversationMemoryService memoryService;
     private final ObjectMapper mapper;
-
-    @Value("${ai.memory.max-messages:12}")
-    private int defaultWindow;
+    private final EffectiveProps effectiveProps;
 
     @Override
     public String name() {
@@ -38,6 +36,7 @@ public class FindRelevantMemoryTool implements AiTool {
 
     @Override
     public Map<String, Object> parametersSchema() {
+        int window = normalizeWindow(effectiveProps.memoryMaxMessages());
         return Map.of(
                 "type", "object",
                 "properties", Map.of(
@@ -48,7 +47,7 @@ public class FindRelevantMemoryTool implements AiTool {
                                 "type", "integer",
                                 "minimum", MIN_MESSAGES,
                                 "maximum", MAX_MESSAGES,
-                                "default", Math.max(MIN_MESSAGES, normalizeWindow(defaultWindow))
+                                "default", Math.max(MIN_MESSAGES, window)
                         )
                 ),
                 "required", List.of("userId", "conversationId")
@@ -61,7 +60,7 @@ public class FindRelevantMemoryTool implements AiTool {
         String conversationId = (String) args.get("conversationId");
         String query = (String) args.getOrDefault("query", "");
         int maxMessages = normalizeInt(args.get("maxMessages"),
-                normalizeWindow(defaultWindow), MIN_MESSAGES, MAX_MESSAGES);
+                normalizeWindow(effectiveProps.memoryMaxMessages()), MIN_MESSAGES, MAX_MESSAGES);
 
         if (userId == null || conversationId == null) {
             throw new IllegalArgumentException("userId and conversationId are required");

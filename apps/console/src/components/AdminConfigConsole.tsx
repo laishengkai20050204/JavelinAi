@@ -11,6 +11,7 @@ type RuntimeCfg = {
   compatibility?: string;
   model?: string;
   toolsMaxLoops?: number;
+  memoryMaxMessages?: number | null;
   toolToggles?: Record<string, boolean>;
   baseUrl?: string;
   apiKeyMasked?: string | null;
@@ -61,6 +62,7 @@ const I18N = {
       compatibility: "兼容模式 (compatibility)",
       model: "模型 (model)",
       loops: "最大工具循环次数 (toolsMaxLoops)",
+      memoryMax: "记忆窗口条数 (memoryMaxMessages)",
       baseUrl: "Base URL（覆盖）",
       newKey: "新的 API Key（旧值已隐藏）",
       clientTimeout: "clientTimeoutMs",
@@ -111,6 +113,7 @@ const I18N = {
       compatibility: "Compatibility",
       model: "Model",
       loops: "Max Tool Loops",
+      memoryMax: "Memory Window (messages)",
       baseUrl: "Base URL (override)",
       newKey: "New API Key (old value hidden)",
       clientTimeout: "clientTimeoutMs",
@@ -147,6 +150,7 @@ export default function AdminConfigConsole() {
   const [compatibility, setCompatibility] = useState<string>("OPENAI");
   const [model, setModel] = useState<string>("");
   const [toolsMaxLoops, setToolsMaxLoops] = useState<number>(10);
+  const [memoryMaxMessages, setMemoryMaxMessages] = useState<number | "">("");
   const [baseUrl, setBaseUrl] = useState<string>("");
   const [newApiKey, setNewApiKey] = useState<string>("");
   const [apiKeyMasked, setApiKeyMasked] = useState<string | null>(null);
@@ -171,6 +175,7 @@ export default function AdminConfigConsole() {
       setCompatibility((r.compatibility ?? e.compatibility ?? "OPENAI") as string);
       setModel(r.model ?? e.model ?? "");
       setToolsMaxLoops(Number(r.toolsMaxLoops ?? e.toolsMaxLoops ?? 10));
+      setMemoryMaxMessages((r.memoryMaxMessages ?? (e as any).memoryMaxMessages ?? "") as any);
       setBaseUrl(r.baseUrl ?? e.baseUrl ?? "");
       setApiKeyMasked(r.apiKeyMasked ?? e.apiKeyMasked ?? null);
       setClientTimeoutMs((r.clientTimeoutMs ?? e.clientTimeoutMs ?? "") as any);
@@ -205,6 +210,11 @@ export default function AdminConfigConsole() {
       Number.isFinite(Number(toolsMaxLoops)) ? Number(toolsMaxLoops) : undefined,
       runtime.toolsMaxLoops ?? undefined
     );
+    push(
+      "memoryMaxMessages",
+      memoryMaxMessages === "" ? undefined : Number(memoryMaxMessages),
+      (runtime as any).memoryMaxMessages ?? undefined
+    );
     push("baseUrl", baseUrl || undefined, runtime.baseUrl ?? undefined);
     push("clientTimeoutMs",
       clientTimeoutMs === "" ? undefined : Number(clientTimeoutMs),
@@ -222,7 +232,7 @@ export default function AdminConfigConsole() {
     }
     if (newApiKey && newApiKey.trim().length > 0) payload.apiKey = newApiKey.trim();
     return payload;
-  }, [runtime, compatibility, model, toolsMaxLoops, baseUrl, clientTimeoutMs, streamTimeoutMs, newApiKey, toolToggles]);
+  }, [runtime, compatibility, model, toolsMaxLoops, memoryMaxMessages, baseUrl, clientTimeoutMs, streamTimeoutMs, newApiKey, toolToggles]);
 
   const isDiffEmpty = useMemo(() => !diffPayload || Object.keys(diffPayload as any).length === 0, [diffPayload]);
 
@@ -282,6 +292,7 @@ export default function AdminConfigConsole() {
     setCompatibility(runtime.compatibility ?? effective.compatibility ?? "OPENAI");
     setModel(runtime.model ?? effective.model ?? "");
     setToolsMaxLoops(Number(runtime.toolsMaxLoops ?? effective.toolsMaxLoops ?? 10));
+    setMemoryMaxMessages((runtime as any).memoryMaxMessages ?? (effective as any).memoryMaxMessages ?? "");
     setBaseUrl(runtime.baseUrl ?? effective.baseUrl ?? "");
     setNewApiKey("");
     setApiKeyMasked(runtime.apiKeyMasked ?? effective.apiKeyMasked ?? null);
@@ -358,6 +369,7 @@ export default function AdminConfigConsole() {
                     </div>
                     <Snap k="apiKeyMasked" v={effective.apiKeyMasked ?? "-"} />
                     <Snap k="toolsMaxLoops" v={String(effective.toolsMaxLoops)} />
+                    <Snap k="memoryMaxMessages" v={String((effective as any).memoryMaxMessages ?? "-")} />
                     <Snap k="clientTimeoutMs" v={String(effective.clientTimeoutMs ?? "-")} />
                     <Snap k="streamTimeoutMs" v={String(effective.streamTimeoutMs ?? "-")} />
                   </Card>
@@ -370,6 +382,7 @@ export default function AdminConfigConsole() {
                     </div>
                     <Snap k="apiKeyMasked" v={runtime?.apiKeyMasked ?? "-"} />
                     <Snap k="toolsMaxLoops" v={String(runtime?.toolsMaxLoops ?? "-")} />
+                    <Snap k="memoryMaxMessages" v={String((runtime as any)?.memoryMaxMessages ?? "-")} />
                     <Snap k="clientTimeoutMs" v={String(runtime?.clientTimeoutMs ?? "-")} />
                     <Snap k="streamTimeoutMs" v={String(runtime?.streamTimeoutMs ?? "-")} />
                   </Card>
@@ -393,6 +406,9 @@ export default function AdminConfigConsole() {
               </Field>
               <Field label={t.fields.loops}>
                 <input type="number" min={0} value={toolsMaxLoops} onChange={(e) => setToolsMaxLoops(Number(e.target.value))} className="w-full rounded-xl border border-slate-300 bg-white p-2 text-slate-900 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100" />
+              </Field>
+              <Field label={t.fields.memoryMax}>
+                <input type="number" min={1} value={memoryMaxMessages as any} onChange={(e) => setMemoryMaxMessages(e.target.value === "" ? "" : Number(e.target.value))} className="w-full rounded-xl border border-slate-300 bg-white p-2 text-slate-900 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100" />
               </Field>
             </div>
           </Section>

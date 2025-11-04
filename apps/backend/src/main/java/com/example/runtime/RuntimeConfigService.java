@@ -30,6 +30,7 @@ public class RuntimeConfigService {
                 .compatibility(null)
                 .model(props.getModel())
                 .toolsMaxLoops(props.getTools() != null ? props.getTools().getMaxLoops() : 2)
+                .memoryMaxMessages(props.getMemory() != null ? props.getMemory().getMaxMessages() : null)
                 .clientTimeoutMs(props.getClient() != null ? props.getClient().getTimeoutMs() : null)
                 .streamTimeoutMs(props.getClient() != null ? props.getClient().getStreamTimeoutMs() : null)
                 .baseUrl(props.getBaseUrl())

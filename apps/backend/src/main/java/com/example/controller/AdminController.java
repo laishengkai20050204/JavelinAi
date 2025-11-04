@@ -44,6 +44,7 @@ public class AdminController {
         runtime.put("apiKeyMasked", mask(rc.getApiKey())); // ✅ 打码
         runtime.put("clientTimeoutMs", rc.getClientTimeoutMs());
         runtime.put("streamTimeoutMs", rc.getStreamTimeoutMs());
+        runtime.put("memoryMaxMessages", rc.getMemoryMaxMessages());
 
         Map<String, Object> effective = new LinkedHashMap<>();
         effective.put("compatibility", effectiveProps.mode().name());
@@ -51,17 +52,18 @@ public class AdminController {
         effective.put("toolsMaxLoops", effectiveProps.toolsMaxLoops());
         effective.put("clientTimeoutMs", effectiveProps.clientTimeoutMs());
         effective.put("streamTimeoutMs", effectiveProps.streamTimeoutMs());
+        effective.put("memoryMaxMessages", effectiveProps.memoryMaxMessages());
         // ✅ 回显真实生效的 baseUrl 与打码的 apiKey
         effective.put("baseUrl", effectiveProps.baseUrl());
         effective.put("apiKeyMasked", mask(effectiveProps.apiKey()));
 
         // 🔒 将 GET 的详细日志降到 debug，并做脱敏
-        log.debug("[ADMIN][GET]/config runtime: compat={} model={} loops={} baseUrl={} apiKeyMasked={} cTimeout={} sTimeout={}",
-                runtime.get("compatibility"), runtime.get("model"), runtime.get("toolsMaxLoops"),
+        log.debug("[ADMIN][GET]/config runtime: compat={} model={} loops={} memWin={} baseUrl={} apiKeyMasked={} cTimeout={} sTimeout={}",
+                runtime.get("compatibility"), runtime.get("model"), runtime.get("toolsMaxLoops"), runtime.get("memoryMaxMessages"),
                 safeBaseUrl(String.valueOf(runtime.get("baseUrl"))), runtime.get("apiKeyMasked"),
                 runtime.get("clientTimeoutMs"), runtime.get("streamTimeoutMs"));
-        log.debug("[ADMIN][GET]/config effective: compat={} model={} loops={} baseUrl={} apiKeyMasked={} cTimeout={} sTimeout={}",
-                effective.get("compatibility"), effective.get("model"), effective.get("toolsMaxLoops"),
+        log.debug("[ADMIN][GET]/config effective: compat={} model={} loops={} memWin={} baseUrl={} apiKeyMasked={} cTimeout={} sTimeout={}",
+                effective.get("compatibility"), effective.get("model"), effective.get("toolsMaxLoops"), effective.get("memoryMaxMessages"),
                 safeBaseUrl(String.valueOf(effective.get("baseUrl"))), effective.get("apiKeyMasked"),
                 effective.get("clientTimeoutMs"), effective.get("streamTimeoutMs"));
 
@@ -102,6 +104,7 @@ public class AdminController {
                 .compatibility( compat )
                 .model(           coalesce(getString(body,"model"),            old.getModel()))
                 .toolsMaxLoops(   coalesce(getInt(body,"toolsMaxLoops"),       old.getToolsMaxLoops()))
+                .memoryMaxMessages(coalesce(getInt(body,"memoryMaxMessages"),  old.getMemoryMaxMessages()))
                 .toolToggles(     mergedToggles)
                 .baseUrl(         coalesce(getString(body,"baseUrl"),          old.getBaseUrl()))
                 .apiKey(          coalesce(getString(body,"apiKey"),           old.getApiKey()))

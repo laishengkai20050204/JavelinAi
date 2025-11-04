@@ -32,4 +32,7 @@ public class RuntimeConfig {
     private String apiKey;
     private Long clientTimeoutMs;
     private Long streamTimeoutMs;
+
+    /** 读取记忆条数上限（用于上下文拼装/相关记忆检索）；为空则回退到静态配置 */
+    private Integer memoryMaxMessages;
 }

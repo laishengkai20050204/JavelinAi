@@ -3,7 +3,7 @@ package com.example.service.impl;
 import com.example.api.dto.AssembledContext;
 import com.example.api.dto.ChatMessage;
 import com.example.api.dto.StepState;
-import com.example.config.AiProperties;
+import com.example.config.EffectiveProps;
 import com.example.service.ContextAssembler;
 import com.example.service.ConversationMemoryService;
 import com.example.util.MsgTrace;
@@ -25,7 +25,7 @@ public class ContextAssemblerImpl implements ContextAssembler {
     private final ConversationMemoryService memoryService;
     private final ObjectMapper objectMapper;
     private final StepContextStore stepStore;
-    private final AiProperties aiProperties;
+    private final EffectiveProps effectiveProps;
 
     @Override
     public Mono<AssembledContext> assemble(StepState st) {
@@ -37,14 +37,8 @@ public class ContextAssemblerImpl implements ContextAssembler {
         final String userId = (st.req() != null) ? st.req().userId() : null;
         final String conversationId = (st.req() != null) ? st.req().conversationId() : null;
 
-        // 2) 读取上下文（只读 FINAL；条数从配置读取，默认 12）
-        int limit = 12;
-        try {
-            if (aiProperties != null && aiProperties.getMemory() != null) {
-                int cfg = aiProperties.getMemory().getMaxMessages(); // int，不能与 null 比较
-                limit = Math.max(1, cfg);
-            }
-        } catch (Exception ignore) {}
+        // 2) 读取上下文（只读 FINAL；条数从“生效配置”读取，默认>=1）
+        int limit = (effectiveProps != null) ? Math.max(1, effectiveProps.memoryMaxMessages()) : 12;
 
         // 1) 历史 FINAL（保留原行为，受 limit 约束）
         final List<Map<String, Object>> finalRows =
