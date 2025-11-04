@@ -113,7 +113,8 @@ public class DecisionServiceSpringAi implements DecisionService {
                                         st.req().userId(),
                                         st.req().conversationId(),
                                         st.stepId(),
-                                        calls
+                                        calls,
+                                        draft
                                 );
                                 log.debug("[memory] decision draft persisted (new) step={} fp={}", st.stepId(), fp.substring(0, 12));
                             } else {
@@ -226,7 +227,8 @@ public class DecisionServiceSpringAi implements DecisionService {
             String userId,
             String conversationId,
             String stepId,
-            List<ToolCall> calls
+            List<ToolCall> calls,
+            String assistantDraft
     ) {
         try {
             Integer max = memoryService.findMaxSeq(userId, conversationId, stepId);
@@ -253,11 +255,16 @@ public class DecisionServiceSpringAi implements DecisionService {
                     "stepId",     stepId
             );
 
+            // 这里把 content 写成 LLM 的文本草稿（可能是对工具调用的解释/过场话术）
+            String contentToSave = (assistantDraft != null && !assistantDraft.isBlank())
+                    ? assistantDraft
+                    : "";
+
             memoryService.upsertMessage(
                     userId,
                     conversationId,
                     "assistant",                 // ← 决策来自 assistant
-                    "",                          // content 为空（只存决策结构）
+                    contentToSave,                          // content 为空（只存决策结构）
                     objectMapper.writeValueAsString(payload),
                     stepId,
                     seq,
