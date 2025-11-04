@@ -13,6 +13,7 @@ public record ToolResult(
         return new ToolResult(callId, name, reused, "SUCCESS", data);
     }
     public static ToolResult error(String callId, String name, String error) {
-        return new ToolResult(callId, name, false, "ERROR", Map.of("message", error));
+        String msg = (error == null || error.isBlank()) ? "Unknown error" : error;
+        return new ToolResult(callId, name, false, "ERROR", Map.of("message", msg));
     }
 }
