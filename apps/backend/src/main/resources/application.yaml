@@ -98,3 +98,8 @@ logging:
 
 mybatis:
   mapper-locations: classpath*:com/example/mapper/*.xml
+
+sse:
+  heartbeat-every: PT20S   # 20 秒心跳
+  step-ttl: PT10M          # 10 分钟无活动自动清理
+  janitor-every: PT60S     # 60 秒扫一次

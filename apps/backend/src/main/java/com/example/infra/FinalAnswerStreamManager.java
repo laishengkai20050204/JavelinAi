@@ -16,6 +16,7 @@ import reactor.core.publisher.Sinks;
 import java.time.Duration;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 @Slf4j
 @Component
@@ -27,15 +28,10 @@ public class FinalAnswerStreamManager {
     private final ObjectMapper mapper;
 
     static final class Holder {
-        final Sinks.Many<String> chunkSink;     // 每个 LLM chunk（JSON 字符串，OpenAI delta 结构）
-        final StringBuilder buf;                // 拼接纯文本（从 delta.content 提取）
-        volatile Disposable upstream;           // 与 provider 的订阅
-        volatile boolean started = false;
-
-        Holder() {
-            this.chunkSink = Sinks.many().multicast().directBestEffort();
-            this.buf = new StringBuilder(4096);
-        }
+        final Sinks.Many<String> chunkSink = Sinks.many().multicast().directBestEffort();
+        final StringBuilder buf = new StringBuilder(4096);
+        volatile Disposable upstream;
+        final AtomicBoolean started = new AtomicBoolean(false);
     }
 
     private final Map<String, Holder> holders = new ConcurrentHashMap<>();
@@ -43,30 +39,23 @@ public class FinalAnswerStreamManager {
     /** 启动一条 provider 流（幂等） */
     public void start(String stepId, Map<String, Object> payload) {
         Holder h = holders.computeIfAbsent(stepId, k -> new Holder());
-        if (h.started) {
+        if (!h.started.compareAndSet(false, true)) {        // ← 并发安全防重复
             log.debug("[FASM] step={} already started", stepId);
             return;
         }
-        h.started = true;
 
-        // 调 provider 的流式接口（你在 SpringAiChatGateway.stream 已返回 JSON chunk 字符串）
         Flux<String> src = gateway.stream(payload, effectiveProps.mode())
                 .doOnSubscribe(s -> log.debug("[FASM] stream start step={}", stepId))
                 .doOnNext(chunk -> {
-                    // 把 chunk 广播出去
                     h.chunkSink.tryEmitNext(chunk);
-                    // 同时解析累积最终文本
                     try {
                         JsonNode root = mapper.readTree(chunk);
                         JsonNode delta = root.path("choices").path(0).path("delta");
                         if (delta != null) {
                             String part = delta.path("content").asText(null);
-                            if (part != null && !part.isEmpty()) {
-                                h.buf.append(part);
-                            }
+                            if (part != null && !part.isEmpty()) h.buf.append(part);
                         }
-                    } catch (Exception ignore) {
-                    }
+                    } catch (Exception ignore) {}
                 })
                 .doOnError(e -> {
                     log.warn("[FASM] stream error step={} err={}", stepId, e.toString());
@@ -75,9 +64,9 @@ public class FinalAnswerStreamManager {
                 .doOnComplete(() -> {
                     log.debug("[FASM] stream complete step={}", stepId);
                     h.chunkSink.tryEmitComplete();
+                    holders.remove(stepId);                      // ← 完成后释放，避免复用到“完成的 sink”
                 });
 
-        // 订阅 provider
         h.upstream = src.subscribe();
     }
 
@@ -92,7 +81,6 @@ public class FinalAnswerStreamManager {
     /** 等待整段文本（从 delta.content 拼起来） */
     public Mono<String> awaitFinalText(String stepId, Duration timeout) {
         Holder h = holders.computeIfAbsent(stepId, k -> new Holder());
-        // 等待 chunk 流完成，然后返回拼接结果
         return h.chunkSink.asFlux()
                 .then(Mono.fromCallable(() -> h.buf.toString()))
                 .timeout(timeout);
@@ -101,8 +89,10 @@ public class FinalAnswerStreamManager {
     /** 可选：手动清理（通常由外部 finished 时做） */
     public void clear(String stepId) {
         Holder h = holders.remove(stepId);
-        if (h != null && h.upstream != null) {
-            h.upstream.dispose();
+        if (h != null) {
+            if (h.upstream != null) h.upstream.dispose();
+            h.chunkSink.tryEmitComplete();                   // ← 让等待者立即收尾
+            h.started.set(false);
         }
     }
 }
