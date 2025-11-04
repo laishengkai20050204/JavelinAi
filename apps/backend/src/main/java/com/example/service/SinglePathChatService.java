@@ -7,6 +7,7 @@ import com.example.api.dto.StepTransition;
 import com.example.api.dto.ToolCall;
 import com.example.api.dto.ToolResult;
 import com.example.config.AiProperties;
+import com.example.infra.StepSseHub;
 import com.example.service.impl.StepContextStore;
 import com.example.util.Fingerprint;
 import com.example.util.ToolPayloads;
@@ -39,6 +40,10 @@ public class SinglePathChatService {
     private final Set<String> userDraftSaved = ConcurrentHashMap.newKeySet();
     private final Set<String> clientBatchIngested = ConcurrentHashMap.newKeySet();
     private final Set<String> userFinalWritten = ConcurrentHashMap.newKeySet();
+    private final StepSseHub sseHub;
+    private final com.example.infra.FinalAnswerStreamManager streamMgr;
+    private final com.example.config.EffectiveProps effectiveProps;
+
 
     public Flux<StepEvent> run(ChatRequest req) {
         return Flux.create(sink -> {
@@ -53,6 +58,7 @@ public class SinglePathChatService {
             }
 
             sink.next(StepEvent.started(stepId, init.loop()));
+            emitJsonToSse(stepId, "started", Map.of("stepId", stepId, "loop", init.loop()));
 
             AtomicBoolean cancelled = new AtomicBoolean(false);
             sink.onCancel(() -> cancelled.set(true));
@@ -70,6 +76,7 @@ public class SinglePathChatService {
                     "phase", "CLIENT_WAIT",
                     "stepId", st.stepId()
             )));
+            emitJsonToSse(st.stepId(), "status", Map.of("phase","CLIENT_WAIT","stepId",st.stepId()));
             sink.complete();
             return;
         }
@@ -82,6 +89,8 @@ public class SinglePathChatService {
 
             // 然后发 finished
             sink.next(StepEvent.finished(st.stepId(), st.loop()));
+            emitJsonToSse(st.stepId(), "finished", Map.of("stepId", st.stepId(), "loop", st.loop()));
+            sseHub.complete(st.stepId()); // 清理该 step 管道
             sink.complete();
 
             // 若有：decisionService.clearStep(st.stepId());
@@ -93,6 +102,7 @@ public class SinglePathChatService {
         }
 
         if (cancelled.get()) {
+            sseHub.complete(st.stepId());  // 新增
             sink.complete();
             return;
         }
@@ -106,6 +116,8 @@ public class SinglePathChatService {
                     org.slf4j.LoggerFactory.getLogger(getClass()).error("[step-ndjson] loop error", err);
                     // 直接传 Throwable，避免 null message 再次触发 NPE
                     sink.next(StepEvent.error(st.stepId(), st.loop(), err));
+                    emitJsonToSse(st.stepId(), "error", Map.of("stepId", st.stepId(), "message", String.valueOf(err.getMessage())));
+                    sseHub.complete(st.stepId());  // 新增
                     sink.complete();
                 });
     }
@@ -152,15 +164,15 @@ public class SinglePathChatService {
                                     if (allCalls.isEmpty()) {
                                         String draft = org.springframework.util.StringUtils.hasText(decision.assistantDraft())
                                                 ? decision.assistantDraft() : null;
-                                        if (draft != null) {
-                                            Map<String, Object> payload = new LinkedHashMap<>();
-                                            payload.put("stepId", st.stepId());
-                                            payload.put("type", "assistant");
-                                            payload.put("text", draft);
-                                            return continuationService.appendAssistantToMemory(st.stepId(), draft)
-                                                    .thenReturn(StepTransition.of(withHash.finish(FinishReason.DONE), List.of(StepEvent.step(payload))));
-
-                                        }
+//                                        if (draft != null) {
+//                                            Map<String, Object> payload = new LinkedHashMap<>();
+//                                            payload.put("stepId", st.stepId());
+//                                            payload.put("type", "assistant");
+//                                            payload.put("text", draft);
+//                                            return continuationService.appendAssistantToMemory(st.stepId(), draft)
+//                                                    .thenReturn(StepTransition.of(withHash.finish(FinishReason.DONE), List.of(StepEvent.step(payload))));
+//
+//                                        }
                                         return continueAnswer(withHash, ctx);
                                     }
 
@@ -179,6 +191,8 @@ public class SinglePathChatService {
                                     }
 
                                     StepEvent decisionEvent = decisionEvent(allCalls);
+                                    emitJsonToSse(st.stepId(), "decision", Map.of("toolCalls", serializeCalls(allCalls)));
+
 
                                     if (!serverCalls.isEmpty()) {
                                         // 去重后的待执行 SERVER 列表
@@ -213,30 +227,38 @@ public class SinglePathChatService {
                                                         "stepId", st.stepId(),
                                                         "calls", serializeCalls(deferred)
                                                 )));
+
+                                                // ★★★ 这里新增一行：镜像到 SSE
+                                                emitJsonToSse(st.stepId(), "clientCalls", Map.of(
+                                                        "stepId", st.stepId(),
+                                                        "calls", serializeCalls(deferred)
+                                                ));
+
                                                 return Mono.just(StepTransition.of(withHash.finish(FinishReason.WAIT_CLIENT), ev));
                                             }
+
 
                                             // 没有 clientCalls，则按草稿/续写兜底
                                             String draft = org.springframework.util.StringUtils.hasText(decision.assistantDraft())
                                                     ? decision.assistantDraft() : null;
-                                            if (draft != null) {
-                                                Map<String, Object> payload = new LinkedHashMap<>();
-                                                payload.put("stepId", st.stepId());
-                                                payload.put("type", "assistant");
-                                                payload.put("text", draft);
-                                                return continuationService.appendAssistantToMemory(st.stepId(), draft)
-                                                        .thenReturn(StepTransition.of(withHash.finish(FinishReason.DONE), List.of(
-                                                                decisionEvent,
-                                                                StepEvent.step(payload)
-                                                        )));
-                                            } else {
+//                                            if (draft != null) {
+//                                                Map<String, Object> payload = new LinkedHashMap<>();
+//                                                payload.put("stepId", st.stepId());
+//                                                payload.put("type", "assistant");
+//                                                payload.put("text", draft);
+//                                                return continuationService.appendAssistantToMemory(st.stepId(), draft)
+//                                                        .thenReturn(StepTransition.of(withHash.finish(FinishReason.DONE), List.of(
+//                                                                decisionEvent,
+//                                                                StepEvent.step(payload)
+//                                                        )));
+//                                            } else {
                                                 return continueAnswer(withHash, ctx).map(tr -> {
                                                     List<StepEvent> merged = new ArrayList<>();
                                                     merged.add(decisionEvent);
                                                     merged.addAll(tr.events());
                                                     return StepTransition.of(tr.nextState(), merged);
                                                 });
-                                            }
+//                                            }
                                         }
                                     }
 
@@ -250,23 +272,30 @@ public class SinglePathChatService {
                                                 "stepId", st.stepId(),
                                                 "calls", serializeCalls(deferred)
                                         )));
+
+                                        // ★ 新增：镜像到 SSE
+                                        emitJsonToSse(st.stepId(), "clientCalls", Map.of(
+                                                "stepId", st.stepId(),
+                                                "calls", serializeCalls(deferred)
+                                        ));
+
                                         return Mono.just(StepTransition.of(withHash.finish(FinishReason.WAIT_CLIENT), ev));
                                     }
 
                                     // 理论上到不了这里；兜底：草稿/续写
                                     String draft = org.springframework.util.StringUtils.hasText(decision.assistantDraft())
                                             ? decision.assistantDraft() : null;
-                                    if (draft != null) {
-                                        Map<String, Object> payload = new LinkedHashMap<>();
-                                        payload.put("stepId", st.stepId());
-                                        payload.put("type", "assistant");
-                                        payload.put("text", draft);
-                                        return continuationService.appendAssistantToMemory(st.stepId(), draft)
-                                                .thenReturn(StepTransition.of(withHash.finish(FinishReason.DONE), List.of(
-                                                        decisionEvent,
-                                                        StepEvent.step(payload)
-                                                )));
-                                    }
+//                                    if (draft != null) {
+//                                        Map<String, Object> payload = new LinkedHashMap<>();
+//                                        payload.put("stepId", st.stepId());
+//                                        payload.put("type", "assistant");
+//                                        payload.put("text", draft);
+//                                        return continuationService.appendAssistantToMemory(st.stepId(), draft)
+//                                                .thenReturn(StepTransition.of(withHash.finish(FinishReason.DONE), List.of(
+//                                                        decisionEvent,
+//                                                        StepEvent.step(payload)
+//                                                )));
+//                                    }
                                     return continueAnswer(withHash, ctx).map(tr -> {
                                         List<StepEvent> merged = new ArrayList<>();
                                         merged.add(decisionEvent);
@@ -319,17 +348,26 @@ public class SinglePathChatService {
                         if (ek != null) st.executedKeys().add(String.valueOf(ek));
                     });
                     StepEvent toolsEvent = StepEvent.step(Map.of("type","tools","results", results));
+                    emitJsonToSse(st.stepId(), "tools", Map.of("results", results));
                     List<StepEvent> ev = new ArrayList<>();
                     ev.add(toolsEvent);
 
-                    // SERVER 执行完，看看有没有延迟下发的 clientCalls
+// SERVER 执行完，看看有没有延迟下发的 clientCalls
                     List<ToolCall> deferred = stepStore.pollClientCalls(st.stepId());
                     if (!deferred.isEmpty()) {
                         ev.add(StepEvent.step(Map.of("type", "clientCalls", "calls", serializeCalls(deferred))));
+
+                        // ★★★ 这里新增一行：镜像到 SSE
+                        emitJsonToSse(st.stepId(), "clientCalls", Map.of(
+                                "stepId", st.stepId(),
+                                "calls", serializeCalls(deferred)
+                        ));
+
                         // 关键：结束本轮，等客户端把 clientResults 回传（下一次请求的 preIngest 会吸收它们）
                         StepState next = st.withPending(List.of()).finish(FinishReason.WAIT_CLIENT);
                         return StepTransition.of(next, ev);
                     }
+
 
                     // 没有 clientCalls，则按原来的行为继续下一轮
                     StepState next = st.withPending(List.of()).nextLoop();
@@ -387,12 +425,33 @@ public class SinglePathChatService {
 
 
     private Mono<StepTransition> continueAnswer(StepState st, AssembledContext ctx) {
-        return continuationService.generateAssistant(ctx)
+        // 1) 准备最终续写的 payload（默认禁用工具，避免流中再起工具调用）
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("model", effectiveProps.model());   // ★ 加这一行
+        payload.put("messages", ctx.modelMessages());
+        payload.put("structuredToolMessages", ctx.structuredToolMessages());
+        payload.put("_flattened", false);
+        payload.put("toolChoice", "none");
+
+        // 2) 启动同一条模型流（供 NDJSON 收尾 + SSE 同时复用）
+        streamMgr.start(st.stepId(), payload);
+
+        // 2.1 把 token 流转发到同一个 step 的 SSE；事件名沿用 "message"（OpenAI 兼容）
+        sseHub.forward(st.stepId(), streamMgr.sse(st.stepId(), effectiveProps.model()));
+
+        // 3) NDJSON 等完整文本 → 落库 → 发最终事件
+        return streamMgr.awaitFinalText(st.stepId(), Duration.ofMinutes(3))
                 .flatMap(text -> continuationService.appendAssistantToMemory(st.stepId(), text).thenReturn(text))
                 .map(text -> StepTransition.of(st.finish(FinishReason.DONE), List.of(
                         StepEvent.step(Map.of("type", "assistant", "text", text))
-                )));
+                )))
+                .onErrorResume(e -> Mono.just(
+                        StepTransition.of(st.finish(FinishReason.DONE), List.of(
+                                StepEvent.step(Map.of("type","assistant","text","[stream error] " + e.getMessage()))
+                        ))
+                ));
     }
+
 
     private static String safe(String s) {
         return s == null ? "" : s;
@@ -496,6 +555,12 @@ public class SinglePathChatService {
                     return Mono.empty();
                 });
     }
+
+    private void emitJsonToSse(String stepId, String event, Map<String, Object> payload) {
+        try { sseHub.emit(stepId, event, objectMapper.writeValueAsString(payload)); }
+        catch (Exception e) { sseHub.emit(stepId, event, "{\"error\":\"serialize failed\"}"); }
+    }
+
 
 
 
