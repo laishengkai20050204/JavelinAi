@@ -17,16 +17,16 @@ export type StepEvent = {
     type: string;                   // STARTED | STEP | FINISHED | ERROR | ...
     ts?: string | number;
     message?: string;
-    state?: any;
-    transition?: any;
+    state?: unknown;
+    transition?: unknown;
     pendingClientCalls?: ClientCall[];
-    [k: string]: any;
+    [k: string]: unknown;
 };
 
 export type ClientCall = {
     callId: string;                 // ← 由后端的 data.calls[*].id 映射
     name: string;
-    args?: any;                     // ← 由后端的 data.calls[*].arguments 映射
+    args?: unknown;                 // ← 由后端的 data.calls[*].arguments 映射
     hint?: string;                  // 可放 execTarget 等
 };
 
@@ -35,8 +35,8 @@ export type ClientResult = {
     name: string;
     status: "SUCCESS" | "ERROR";
     reused?: boolean;
-    arguments?: any;                // ← 新增：回传原始参数（样例中有）
-    data?: any;                     // ← e.g. { payload:{ type:"text", value:"..." } }
+    arguments?: unknown;            // ← 回传原始参数（样例中有）
+    data?: unknown;                 // ← e.g. { payload:{ type:"text", value:"..." } }
     error?: string;                 // 本地校验错误提示
 };
 
@@ -55,27 +55,43 @@ type ClientToolDraft = {
  *  2) event: "step" && data.phase === "CLIENT_WAIT" → 只是状态；用来更新 stepId
  *  3) 其他事件保留基础字段
  */
-function normalizeEvent(raw: any): StepEvent {
-    if (!raw || typeof raw !== "object") return raw as StepEvent;
-    const ev = String(raw.event || "").toUpperCase();
-    const d = raw.data || {};
+function normalizeEvent(raw: unknown): StepEvent {
+    const r = asRecord(raw);
+    const ev = String(getString(r, "event") ?? "").toUpperCase();
+    const d = asRecord(r["data"]);
 
-    // 默认骨架
+    // ts 允许 string/number
+    const tsVal = r["ts"];
+    const ts: string | number | undefined =
+        typeof tsVal === "string" || typeof tsVal === "number" ? tsVal : undefined;
+
+    const dType = getString(d, "type");
     const base: StepEvent = {
-        type: ev === "STEP" ? (d.type ? String(d.type).toUpperCase() : "STEP") : ev,
-        ts: raw.ts,
-        state: d.stepId ? { stepId: d.stepId, loop: d.loop, phase: d.phase, role: d.type } : undefined,
-        message: d.text,
+        type: ev === "STEP" ? (dType ? dType.toUpperCase() : "STEP") : ev,
+        ts,
+        state: d["stepId"]
+            ? {
+                stepId: getString(d, "stepId"),
+                loop: getNumber(d, "loop"),
+                phase: getString(d, "phase"),
+                role: dType,
+            }
+            : undefined,
+        message: getString(d, "text"),
     };
 
     // clientCalls → pendingClientCalls
-    if (ev === "STEP" && d.type === "clientCalls" && Array.isArray(d.calls)) {
-        base.pendingClientCalls = d.calls.map((c: any) => ({
-            callId: c.id,
-            name: c.name,
-            args: c.arguments,
-            hint: c.execTarget ? `execTarget: ${c.execTarget}` : undefined,
-        }));
+    const calls = d["calls"];
+    if (ev === "STEP" && dType === "clientCalls" && Array.isArray(calls)) {
+        base.pendingClientCalls = calls.map((c0) => {
+            const c = asRecord(c0);
+            return {
+                callId: String(getString(c, "id") ?? ""),
+                name: String(getString(c, "name") ?? ""),
+                args: c["arguments"],
+                hint: getString(c, "execTarget") ? `execTarget: ${getString(c, "execTarget")}` : undefined,
+            };
+        });
     }
     return base;
 }
@@ -106,7 +122,7 @@ export default function StepOrchestratorPage() {
     const hasInvalidTool = tools.some((x) => !x.valid);
     const canSend = canSendBasic && !hasInvalidTool;
 
-    const [reqBody, setReqBody] = React.useState<any | null>(null);
+    const [reqBody, setReqBody] = React.useState<unknown | null>(null);
 
     const { events, loading, error, cancel } = useNdjson(
         "/ai/v3/chat/step/ndjson",
@@ -124,7 +140,7 @@ export default function StepOrchestratorPage() {
 
         // 最近的 stepId
         for (let i = normalized.length - 1; i >= 0; i--) {
-            const sid = normalized[i]?.state?.stepId ?? normalized[i]?.state?.id ?? null;
+            const sid = pickStepId(normalized[i]);
             if (sid) { setLastStepId(sid); break; }
         }
 
@@ -181,17 +197,17 @@ export default function StepOrchestratorPage() {
     }
     function onParamsChange(i: number, text: string) {
         let valid = true; let error: string | undefined;
-        try { if (text.trim()) JSON.parse(text); } catch (e: any) { valid = false; error = e?.message || "Invalid JSON"; }
+        try { if (text.trim()) JSON.parse(text); } catch (e: unknown) { valid = false; error = errorMessage(e) || "Invalid JSON"; }
         updateTool(i, { paramsText: text, valid, error });
     }
     function buildClientToolsPayload() {
         return tools
             .filter((t) => t.name.trim().length > 0 && t.valid)
             .map((t) => {
-                let params: any = {};
+                let params: unknown = {};
                 try { params = t.paramsText.trim() ? JSON.parse(t.paramsText) : { type: "object", properties: {} }; }
                 catch { params = { type: "object", properties: {} }; }
-                const fn: any = { name: t.name.trim() };
+                const fn: Record<string, unknown> = { name: t.name.trim() };
                 if (t.description.trim()) fn.description = t.description.trim();
                 fn.parameters = params;
                 if (t.execTarget) fn["x-execTarget"] = t.execTarget;
@@ -297,8 +313,8 @@ export default function StepOrchestratorPage() {
                 {/* 用户输入 */}
                 <section className="mb-4">
                     <Field label={t.prompt}>
-            <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={4} placeholder={t.promptPh}
-                      className="w-full rounded-xl border border-slate-300 bg-white p-3 font-mono text-sm text-slate-900 placeholder-slate-400 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"/>
+                        <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={4} placeholder={t.promptPh}
+                                  className="w-full rounded-xl border border-slate-300 bg-white p-3 font-mono text-sm text-slate-900 placeholder-slate-400 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"/>
                     </Field>
                 </section>
 
@@ -345,8 +361,11 @@ export default function StepOrchestratorPage() {
                                         </label>
                                         <label className="block text-sm md:col-span-2">
                                             <div className="mb-1 text-slate-500 dark:text-slate-400">x-execTarget</div>
-                                            <select value={tool.execTarget} onChange={(e) => updateTool(i, { execTarget: e.target.value as any })}
-                                                    className="w-full rounded-xl border p-2 text-sm dark:border-slate-700 dark:bg-slate-800">
+                                            <select
+                                                value={tool.execTarget}
+                                                onChange={(e) => updateTool(i, { execTarget: e.target.value as "client" | "" | "server" })}
+                                                className="w-full rounded-xl border p-2 text-sm dark:border-slate-700 dark:bg-slate-800"
+                                            >
                                                 <option value="client">client</option>
                                                 <option value="">(unset)</option>
                                                 <option value="server">server</option>
@@ -387,7 +406,7 @@ export default function StepOrchestratorPage() {
 
                         <div className="space-y-4">
                             {pendingCalls.map((c, i) => {
-                                const url = c?.args?.url;
+                                const url = getString(asRecord(c.args), "url");
                                 return (
                                     <div key={c.callId} className="rounded-xl border p-3 dark:border-slate-700">
                                         <div className="flex items-center justify-between text-sm">
@@ -401,8 +420,8 @@ export default function StepOrchestratorPage() {
                                         <div className="mt-2 text-xs opacity-70">
                                             {t.argsSample}
                                             <pre className="mt-1 max-h-40 overflow-auto rounded bg-slate-50 p-2 dark:bg-slate-800/60">
-                        {JSON.stringify(c.args ?? {}, null, 2)}
-                      </pre>
+{JSON.stringify(c.args ?? {}, null, 2)}
+</pre>
                                         </div>
 
                                         {/* 编辑回传结果：status / reused / arguments / data */}
@@ -418,8 +437,8 @@ export default function StepOrchestratorPage() {
                                                         try {
                                                             const parsed = e.currentTarget.value.trim() ? JSON.parse(e.currentTarget.value) : {};
                                                             updateDraftResult(i, { arguments: parsed, error: undefined });
-                                                        } catch (err: any) {
-                                                            updateDraftResult(i, { error: err?.message || "Invalid JSON" });
+                                                        } catch (err: unknown) {
+                                                            updateDraftResult(i, { error: errorMessage(err) || "Invalid JSON" });
                                                         }
                                                     }}
                                                 />
@@ -436,8 +455,8 @@ export default function StepOrchestratorPage() {
                                                         try {
                                                             const parsed = e.currentTarget.value.trim() ? JSON.parse(e.currentTarget.value) : {};
                                                             updateDraftResult(i, { data: parsed, error: undefined });
-                                                        } catch (err: any) {
-                                                            updateDraftResult(i, { error: err?.message || "Invalid JSON" });
+                                                        } catch (err: unknown) {
+                                                            updateDraftResult(i, { error: errorMessage(err) || "Invalid JSON" });
                                                         }
                                                     }}
                                                 />
@@ -450,7 +469,7 @@ export default function StepOrchestratorPage() {
                                                     <select
                                                         className="w-full rounded-xl border p-2 text-xs dark:border-slate-700 dark:bg-slate-800"
                                                         value={draftResults[i]?.status ?? "SUCCESS"}
-                                                        onChange={(e) => updateDraftResult(i, { status: e.target.value as any })}
+                                                        onChange={(e) => updateDraftResult(i, { status: e.target.value as "SUCCESS" | "ERROR" })}
                                                     >
                                                         <option value="SUCCESS">SUCCESS</option>
                                                         <option value="ERROR">ERROR</option>
@@ -520,8 +539,8 @@ export default function StepOrchestratorPage() {
                                         {e.type === "ERROR" && <span className="text-red-600 dark:text-red-300">{e.message ?? ""}</span>}
                                         {e.type === "FINISHED" && (
                                             <span className="flex items-center gap-1 text-emerald-600 dark:text-emerald-300">
-                        <CheckCircle2 size={14} /> {t.finished}
-                      </span>
+                                                <CheckCircle2 size={14} /> {t.finished}
+                                            </span>
                                         )}
                                     </div>
 
@@ -535,13 +554,15 @@ export default function StepOrchestratorPage() {
 
                                     {/* 详情：state 独占一行，其它占栅格 */}
                                     <div className="mt-2 grid gap-2 grid-cols-1 md:grid-cols-3">
-                                        {e.state && (
+                                        {e.state != null && (
                                             <div className="rounded-xl border bg-slate-50 p-2 text-xs dark:border-slate-700 dark:bg-slate-800 md:col-span-3">
                                                 <div className="mb-1 font-medium opacity-70">state</div>
                                                 <pre className="max-h-[60vh] overflow-auto">{JSON.stringify(e.state, null, 2)}</pre>
                                             </div>
                                         )}
-                                        {e.transition && (
+
+                                        {/* transition */}
+                                        {e.transition != null && (
                                             <div className="rounded-xl border bg-slate-50 p-2 text-xs dark:border-slate-700 dark:bg-slate-800">
                                                 <div className="mb-1 font-medium opacity-70">transition</div>
                                                 <pre className="max-h-56 overflow-auto">{JSON.stringify(e.transition, null, 2)}</pre>
@@ -648,7 +669,7 @@ function Banner({ icon, text, color }: { icon: React.ReactNode; text: string; co
 
 function useNdjson(
     url: string,
-    options?: { method?: "GET" | "POST"; body?: any; headers?: Record<string, string> }
+    options?: { method?: "GET" | "POST"; body?: unknown; headers?: Record<string, string> }
 ) {
     const [events, setEvents] = React.useState<StepEvent[]>([]);
     const [loading, setLoading] = React.useState(false);
@@ -686,7 +707,7 @@ function useNdjson(
                         try {
                             const evt = JSON.parse(line) as StepEvent;
                             if (!cancelled) setEvents((prev) => [...prev, evt]);
-                        } catch {}
+                        } catch { /* empty */ }
                     }
                 }
                 const tail = buf.trim();
@@ -694,18 +715,45 @@ function useNdjson(
                     try {
                         const evt = JSON.parse(tail) as StepEvent;
                         if (!cancelled) setEvents((prev) => [...prev, evt]);
-                    } catch {}
+                    } catch { /* empty */ }
                 }
-            } catch (e: any) {
-                if (!cancelled) setError(String(e?.message ?? e));
+            } catch (e: unknown) {
+                if (!cancelled) setError(errorMessage(e) ?? String(e));
             } finally {
                 if (!cancelled) setLoading(false);
             }
         }
         run();
         return () => { cancelled = true; ctrl.abort(); };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [url, JSON.stringify(options ?? {})]);
 
     const cancel = React.useCallback(() => abortRef.current?.abort(), []);
     return { events, loading, error, cancel };
+}
+
+/* ====== 类型/运行时辅助（无逻辑改动，仅为类型安全） ====== */
+function asRecord(v: unknown): Record<string, unknown> {
+    return v !== null && typeof v === "object" ? (v as Record<string, unknown>) : {};
+}
+function getString(r: Record<string, unknown>, key: string): string | undefined {
+    const v = r[key];
+    return typeof v === "string" ? v : undefined;
+}
+function getNumber(r: Record<string, unknown>, key: string): number | undefined {
+    const v = r[key];
+    return typeof v === "number" ? v : undefined;
+}
+function errorMessage(e: unknown): string | undefined {
+    if (typeof e === "string") return e;
+    if (typeof e === "object" && e !== null) {
+        const r = e as Record<string, unknown>;
+        if (typeof r.message === "string") return r.message;
+    }
+    return undefined;
+}
+function pickStepId(e: StepEvent): string | null {
+    const s = asRecord(e.state);
+    const a = getString(s, "stepId") || getString(s, "id");
+    return a ?? null;
 }

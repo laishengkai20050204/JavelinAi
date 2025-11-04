@@ -144,8 +144,8 @@ export default function AuditConsolePage() {
             const json = (await res.json()) as Report;
             setReport(json);
             setTail(json.tailHash ?? null);
-        } catch (e: any) {
-            setError(e?.message ?? String(e));
+        } catch (e: unknown) {
+            setError(errorMessage(e) ?? String(e));
         } finally {
             setLoading(false);
         }
@@ -157,10 +157,10 @@ export default function AuditConsolePage() {
         try {
             const res = await fetch(`/audit/tail?${qs}`, { headers: { Accept: "application/json" } });
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
-            const json = await res.json();
+            const json = (await res.json()) as { tailHash?: string | null };
             setTail(json.tailHash ?? null);
-        } catch (e: any) {
-            setError(e?.message ?? String(e));
+        } catch (e: unknown) {
+            setError(errorMessage(e) ?? String(e));
         } finally {
             setLoading(false);
         }
@@ -438,7 +438,7 @@ function Card({ title, children }: { title: string; children: React.ReactNode })
     );
 }
 
-function Snap({ k, v }: { k: string; v: any }) {
+function Snap({ k, v }: { k: string; v: unknown }) {
     return (
         <div className="rounded-xl border bg-slate-50 p-2 dark:border-slate-700 dark:bg-slate-800">
             <div className="text-[11px] uppercase tracking-wide text-slate-400 dark:text-slate-400">{k}</div>
@@ -466,4 +466,13 @@ function Th({ children }: { children: React.ReactNode }) {
 }
 function Td({ children }: { children: React.ReactNode }) {
     return <td className="px-3 py-2 align-top">{children}</td>;
+}
+
+/* ---------- helpers ---------- */
+function errorMessage(e: unknown): string | undefined {
+    if (typeof e === "string") return e;
+    if (e && typeof e === "object" && "message" in e && typeof (e as { message?: unknown }).message === "string") {
+        return (e as { message: string }).message;
+    }
+    return undefined;
 }

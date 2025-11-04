@@ -1,7 +1,9 @@
 package com.example.service.impl;
 
+import com.example.ai.SpringAiChatGateway;
 import com.example.api.dto.AssembledContext;
 import com.example.api.dto.ToolResult;
+import com.example.config.EffectiveProps;
 import com.example.service.ConversationMemoryService;
 import com.example.service.ContinuationService;
 import com.example.util.ToolPayloads;
@@ -25,6 +27,10 @@ public class ContinuationServiceImpl implements ContinuationService {
     private final ConversationMemoryService memoryService;
     private final ObjectMapper objectMapper;
     private final StepContextStore stepStore;
+
+    // ✨ 新增：注入网关 + 有效配置
+    private final SpringAiChatGateway gateway;
+    private final EffectiveProps effectiveProps;
 
     @Override
     public Mono<Void> appendToolResultsToMemory(String stepId, List<ToolResult> results) {
