@@ -364,7 +364,7 @@ export default function AdminConfigConsole() {
                   <Card title={t.sections.snapshots.effective}>
                     <Snap k="compatibility" v={effective.compatibility} />
                     <Snap k="model" v={effective.model} />
-                    <div className="md:col-span-2">
+                    <div>
                       <Snap k="baseUrl" v={effective.baseUrl ?? "-"} />
                     </div>
                     <Snap k="apiKeyMasked" v={effective.apiKeyMasked ?? "-"} />
@@ -377,7 +377,7 @@ export default function AdminConfigConsole() {
                   <Card title={t.sections.snapshots.runtime}>
                     <Snap k="compatibility" v={runtime?.compatibility ?? "-"} />
                     <Snap k="model" v={runtime?.model ?? "-"} />
-                    <div className="md:col-span-2">
+                    <div>
                       <Snap k="baseUrl" v={runtime?.baseUrl ?? "-"} />
                     </div>
                     <Snap k="apiKeyMasked" v={runtime?.apiKeyMasked ?? "-"} />
@@ -394,7 +394,7 @@ export default function AdminConfigConsole() {
         {/* Form */}
         <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} className="rounded-2xl border bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
           <Section title={t.sections.basics}>
-            <div className="grid gap-4 md:grid-cols-3">
+            <div className="grid gap-4 md:grid-cols-4">
               <Field label={t.fields.compatibility}>
                 <select value={compatibility} onChange={(e) => setCompatibility(e.target.value)} className="w-full rounded-xl border border-slate-300 bg-white p-2 text-slate-900 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100">
                   <option value="OPENAI">OPENAI</option>
