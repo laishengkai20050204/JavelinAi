@@ -12,17 +12,44 @@ import { TypeBadge } from "../components/TypeBadge";
 import { buildReplayCurl } from "../lib/curl";
 import { useSharedIds } from "../lib/sharedIds";
 
-/* ===== 类型（与原来一致） ===== */
-type ReplayEvent =
-    | { event: "started"; ts?: string; data?: any }
-    | { event: "finished"; ts?: string; data?: any }
-    | { event?: string; ts?: string; data: { type: "message" | "decision" | "tool"; [k: string]: any } }
-    | any;
+/* ===== 类型（保持原有语义，去掉 any） ===== */
+type MessageData = {
+    type: "message";
+    role?: string;
+    text?: unknown;
+    [k: string]: unknown;
+};
+type DecisionData = {
+    type: "decision";
+    tool_calls?: unknown[];
+    [k: string]: unknown;
+};
+type ToolData = {
+    type: "tool";
+    name?: string;
+    reused?: boolean;
+    text?: unknown;
+    args?: unknown;
+    data?: unknown; // 可能包含 { exitCode?: number }
+    [k: string]: unknown;
+};
+type OtherData = Record<string, unknown>;
+
+type ReplayCore =
+    | { event: "started"; ts?: string; data?: Record<string, unknown> }
+    | { event: "finished"; ts?: string; data?: Record<string, unknown> }
+    | { event?: string; ts?: string; data: MessageData | DecisionData | ToolData | OtherData };
+
+type ReplayEvent = ReplayCore; // 兼容你原来的结构
 
 export default function ReplayCenterPage() {
     type Lang = "zh" | "en";
     const [lang, setLang] = useState<Lang>(() => {
-        try { if (typeof navigator !== "undefined") return navigator.language?.toLowerCase().startsWith("zh") ? "zh" : "en"; } catch {}
+        try {
+            if (typeof navigator !== "undefined") {
+                return navigator.language?.toLowerCase().startsWith("zh") ? "zh" : "en";
+            }
+        } catch { /* empty */ }
         return "zh";
     });
 
@@ -31,7 +58,7 @@ export default function ReplayCenterPage() {
             title: "Javelin 回放中心",
             subtitle: "按行解析 NDJSON · 工具/决策/消息可视化",
             form: {
-                userId: "用户 ID", convId: "会话 ID", stepId: "Step ID（可选，回放到该步含之前）",
+                userId: "用户 ID", convId: "会话 ID", stepId: "Step ID（可选）",
                 limit: "Limit（条数上限）", start: "开始回放", stop: "停止",
                 exportJson: "导出 JSON", exportNdjson: "导出 NDJSON",
                 filter: "筛选", refresh: "清空事件", curl: "复制为 cURL",
@@ -84,7 +111,7 @@ export default function ReplayCenterPage() {
     // derived
     const filteredEvents = useMemo(() => {
         return events.filter((e) => {
-            const typ = e?.data?.type;
+            const typ = getDataType(getData(e));
             if (typ === "message") return showMsg;
             if (typ === "decision") return showDec;
             if (typ === "tool") return showTool;
@@ -112,8 +139,14 @@ export default function ReplayCenterPage() {
         const url = `/ai/replay/ndjson?${qs.toString()}`;
 
         try {
-            await readNdjson(url, (obj) => setEvents((prev) => [...prev, obj]), ac.signal);
-        } catch {} finally {
+            await readNdjson(
+                url,
+                (obj: unknown) => setEvents((prev) => [...prev, obj as ReplayEvent]),
+                ac.signal
+            );
+        } catch {
+            // 忽略读取中断/网络错误，保持原逻辑
+        } finally {
             setLoading(false);
         }
     }
@@ -322,12 +355,15 @@ function Banner({ icon, text, color }: { icon: React.ReactNode; text: string; co
 function EventRow({ e, onCopy, copied, lang }: {
     e: ReplayEvent; onCopy: () => void; copied: boolean; lang: "zh" | "en";
 }) {
-    const type = (e as any)?.data?.type;
-    const ts = (e as any)?.ts || "";
-    const icon = type === "message" ? <MessageSquare size={14}/>
-        : type === "decision" ? <Workflow size={14}/>
-            : type === "tool" ? <Wrench size={14}/>
-                : <Binary size={14}/>;
+    const d = getData(e);
+    const type = getDataType(d);
+    const ts = getTopString(e, "ts") ?? "";
+
+    const icon =
+        type === "message" ? <MessageSquare size={14} /> :
+            type === "decision" ? <Workflow size={14} /> :
+                type === "tool" ? <Wrench size={14} /> :
+                    <Binary size={14} />;
 
     return (
         <div className="flex items-start gap-2 px-2 py-1 hover:bg-white/5 rounded-lg">
@@ -335,11 +371,11 @@ function EventRow({ e, onCopy, copied, lang }: {
             <div className="flex-1">
                 <div className="flex items-center gap-2 text-[11px] text-slate-400">
                     <span>{ts}</span>
-                    <TypeBadge type={type || (e as any)?.event} />
+                    <TypeBadge type={type ?? getEventName(e)} />
                 </div>
                 <div className="mt-1">{renderEventContent(e, lang)}</div>
             </div>
-            <button onClick={onCopy} className="ml-2 opacity-80 hover:opacity-100">
+            <button onClick={onCopy} className="ml-2 opacity-80 hover:opacity-100" title="Copy JSON">
                 {copied ? <ClipboardCheck size={14}/> : <Clipboard size={14}/>}
             </button>
         </div>
@@ -347,17 +383,15 @@ function EventRow({ e, onCopy, copied, lang }: {
 }
 
 /* === 内容渲染：消息 -> Markdown；decision/tool -> 摘要 + JSON 折叠 === */
-function renderEventContent(e: ReplayEvent, lang: "zh"|"en") {
-    const t = (e as any)?.data?.type;
+function renderEventContent(e: ReplayEvent, lang: "zh"|"en"): React.ReactNode {
+    const d = getData(e);
+    const t = getDataType(d);
 
-    // 消息：Markdown（带反转义）
+    // 消息：Markdown
     if (t === "message") {
-        const role = (e as any)?.data?.role ?? "assistant";
-        const textRaw = (e as any)?.data?.text ?? "";
-
-        // ✅ 关键：在 markdown.ts 里已经做了反转义
-        const html = markdownToSafeHtml(String(textRaw));
-
+        const role = (isRecord(d) && typeof d.role === "string") ? d.role : "assistant";
+        const textRaw = isRecord(d) ? d.text : "";
+        const html = markdownToSafeHtml(String(textRaw ?? ""));
         return (
             <div>
                 <div className="mb-1 text-[12px] text-slate-400">{`[${role}]`}</div>
@@ -371,13 +405,13 @@ function renderEventContent(e: ReplayEvent, lang: "zh"|"en") {
 
     // 决策：每个 tool_call 展开参数
     if (t === "decision") {
-        const calls = (e as any)?.data?.tool_calls || [];
+        const calls = (isRecord(d) && Array.isArray(d.tool_calls)) ? d.tool_calls : [];
         return (
             <div className="space-y-2">
                 <div className="text-sm">{lang==="zh" ? "🤖 决策工具" : "🤖 Decide tools"}</div>
-                {calls.map((c: any, i: number) => {
-                    const name = c?.function?.name || c?.name || c?.id || "tool";
-                    const rawArgs = c?.function?.arguments ?? c?.arguments;
+                {calls.map((c: unknown, i: number) => {
+                    const name = getToolCallName(c);
+                    const rawArgs = getToolCallArgsRaw(c);
                     const parsed  = tryParseTwice(rawArgs);
                     return (
                         <div key={i} className="rounded-lg border border-slate-700 bg-slate-900/40 p-2">
@@ -392,33 +426,39 @@ function renderEventContent(e: ReplayEvent, lang: "zh"|"en") {
 
     // 工具：输出文本 + args 折叠
     if (t === "tool") {
-        const name = (e as any)?.data?.name ?? "tool";
-        const reused = (e as any)?.data?.reused ? (lang === "zh" ? "复用" : "reused") : (lang === "zh" ? "新执行" : "fresh");
-        const exitCode = (e as any)?.data?.data?.exitCode;
-        const text = (e as any)?.data?.text;
-        const argsRaw = (e as any)?.data?.args;
+        const name = (isRecord(d) && typeof d.name === "string") ? d.name : "tool";
+        const reusedText = (isRecord(d) && d.reused) ? (lang === "zh" ? "复用" : "reused") : (lang === "zh" ? "新执行" : "fresh");
+
+        let exitCode: number | undefined;
+        if (isRecord(d) && isRecord(d.data) && typeof d.data.exitCode === "number") {
+            exitCode = d.data.exitCode;
+        }
+
+        const textVal = isRecord(d) ? d.text : undefined;
+        const argsRaw = isRecord(d) ? d.args : undefined;
         const argsParsed = tryParseTwice(argsRaw);
+
         return (
             <div className="space-y-2">
                 <div className="text-sm">
-                    {`🛠 ${name} (${reused})`}
-                    {exitCode !== undefined ? ` · exit=${exitCode}` : ""}
+                    {`🛠 ${name} (${reusedText})`}
+                    {typeof exitCode === "number" ? ` · exit=${exitCode}` : ""}
                 </div>
-                {text != null && (
+                {textVal !== undefined && (
                     <details className="rounded-lg border border-slate-700 bg-slate-900/40 p-2" open>
                         <summary className="cursor-pointer select-none text-[12px] text-slate-300">
                             {lang==="zh" ? "工具输出" : "Tool Output"}
                         </summary>
-                        {typeof text === 'string' || typeof text === 'number' || typeof text === 'boolean' ? (
-                            <pre className="mt-2 whitespace-pre-wrap text-xs text-emerald-200">{String(text)}</pre>
+                        {typeof textVal === "string" || typeof textVal === "number" || typeof textVal === "boolean" ? (
+                            <pre className="mt-2 whitespace-pre-wrap text-xs text-emerald-200">{String(textVal)}</pre>
                         ) : (
                             <div className="mt-2">
-                                <JsonViewer data={text} defaultOpen={false} />
+                                <JsonViewer data={textVal} defaultOpen={false} />
                             </div>
                         )}
                     </details>
                 )}
-                {argsRaw && (
+                {argsRaw !== undefined && (
                     <details className="rounded-lg border border-slate-700 bg-slate-900/40 p-2">
                         <summary className="cursor-pointer select-none text-[12px] text-slate-300">
                             {lang==="zh" ? "调用参数" : "Args"}
@@ -432,13 +472,13 @@ function renderEventContent(e: ReplayEvent, lang: "zh"|"en") {
         );
     }
 
-    if ((e as any)?.event === "started")  return <div> {lang==="zh" ? "▶ 开始回放" : "▶ Replay started"} </div>;
-    if ((e as any)?.event === "finished") return <div> {lang==="zh" ? "■ 回放结束" : "■ Replay finished"} </div>;
+    if (getEventName(e) === "started")  return <div>{lang==="zh" ? "▶ 开始回放" : "▶ Replay started"}</div>;
+    if (getEventName(e) === "finished") return <div>{lang==="zh" ? "■ 回放结束" : "■ Replay finished"}</div>;
     return <pre className="whitespace-pre-wrap text-xs">{JSON.stringify(e, null, 2)}</pre>;
 }
 
-/* —— 小工具：安全尝试两次 JSON.parse，并处理 \n —— */
-function tryParseTwice(v: any) {
+/* —— JSON 安全解析（双层 & 转义处理） —— */
+function tryParseTwice(v: unknown): unknown {
     if (typeof v !== "string") return v;
     try {
         const a = JSON.parse(v);
@@ -446,9 +486,13 @@ function tryParseTwice(v: any) {
             try { return JSON.parse(a); } catch { return unescapeText(a); }
         }
         return a;
-    } catch { return unescapeText(v); }
+    } catch {
+        return unescapeText(v);
+    }
 }
-function unescapeText(s: string) {
+
+function unescapeText(s: unknown): unknown {
+    if (typeof s !== "string") return s;
     try {
         return JSON.parse(`"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`);
     } catch {
@@ -463,4 +507,54 @@ function triggerDownload(blob: Blob, filename: string) {
     a.download = filename;
     a.click();
     URL.revokeObjectURL(a.href);
+}
+
+/* —— 类型守卫 & 读取工具 —— */
+function isRecord(v: unknown): v is Record<string, unknown> {
+    return v !== null && typeof v === "object" && !Array.isArray(v);
+}
+
+
+function getData(e: ReplayEvent): Record<string, unknown> | undefined {
+    if (isRecord(e) && "data" in e && isRecord((e as Record<string, unknown>).data)) {
+        return (e as Record<string, unknown>).data as Record<string, unknown>;
+    }
+    return undefined;
+}
+
+function getDataType(d?: Record<string, unknown>): "message" | "decision" | "tool" | undefined {
+    const t = d?.type;
+    return typeof t === "string" && (t === "message" || t === "decision" || t === "tool") ? t : undefined;
+}
+
+function getEventName(e: ReplayEvent): string | undefined {
+    if (isRecord(e) && "event" in e && typeof (e as { event?: unknown }).event === "string") {
+        return (e as { event: string }).event;
+    }
+    return undefined;
+}
+
+function getTopString(e: ReplayEvent, key: string): string | undefined {
+    if (isRecord(e) && typeof (e as Record<string, unknown>)[key] === "string") {
+        return (e as Record<string, unknown>)[key] as string;
+    }
+    return undefined;
+}
+
+/* —— 提取决策工具名/参数（避免 any） —— */
+function getToolCallName(c: unknown): string {
+    if (!isRecord(c)) return "tool";
+    const f = c["function"];
+    if (isRecord(f) && typeof f.name === "string") return f.name;
+    if (typeof c.name === "string") return c.name;
+    if (typeof c.id === "string") return c.id;
+    return "tool";
+}
+
+function getToolCallArgsRaw(c: unknown): unknown {
+    if (!isRecord(c)) return undefined;
+    const f = c["function"];
+    if (isRecord(f) && "arguments" in f) return (f as Record<string, unknown>)["arguments"];
+    if ("arguments" in c) return (c as Record<string, unknown>)["arguments"];
+    return undefined;
 }

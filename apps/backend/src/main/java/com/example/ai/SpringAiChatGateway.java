@@ -97,11 +97,113 @@ public class SpringAiChatGateway {
 
     private Flux<String> executeStream(Map<String, Object> payload, AiProperties.Mode mode) {
         Prompt prompt = toPrompt(payload, mode);
+
+        // 1) 打“请求预览” (和 call() 一样)，方便对比网关出参
+        ObjectNode reqPreview = logOutgoingPayloadJson(prompt, payload, mode);
+
+        // 2) 准备一个聚合器：把 delta.content 和 delta.tool_calls 聚起来，方便完成时打“助手决策快照”
+        StreamDebugAgg agg = new StreamDebugAgg(mapper);
+
         if (log.isDebugEnabled() && prompt.getOptions() instanceof FunctionCallingOptions opts) {
             log.debug("Executing chat stream with model={} mode={}", opts.getModel(), mode);
         }
+
         return chatModel.stream(prompt)
-                .map(response -> formatStreamChunk(response, mode));
+                .map(resp -> {
+                    // 转成你既有的 OpenAI 风格 chunk JSON
+                    String chunk = formatStreamChunk(resp, mode);
+
+                    // 轻量（TRACE 级别）观察原始 chunk；量大，默认关着
+                    if (log.isTraceEnabled()) {
+                        log.trace("[AI-STREAM:chunk] {}", chunk);
+                    }
+
+                    // 3) 累积（只在 DEBUG 开关开着时做）
+                    if (log.isDebugEnabled()) {
+                        agg.acceptChunk(chunk);
+                    }
+                    return chunk;
+                })
+                .doOnError(e -> log.warn("[AI-STREAM:error] {}", e.toString()))
+                .doOnComplete(() -> {
+                    // 4) 完成时打一条“助手决策快照”日志（内容+工具调用），格式和 call() 的 [AI-RESP:MSG] 对齐
+                    if (log.isDebugEnabled()) {
+                        try {
+                            ObjectNode assistantSnap = agg.assistantNode(); // role/content/tool_calls
+                            log.debug("[AI-RESP:MSG(stream)] {}", mapper
+                                    .writerWithDefaultPrettyPrinter()
+                                    .writeValueAsString(assistantSnap));
+                        } catch (Exception ex) {
+                            log.debug("[AI-RESP:MSG(stream)] <failed to serialize>: {}", ex.toString());
+                        }
+                    }
+                })
+                // 可选：在订阅时回显“请求预览”，方便串起请求-响应
+                .doOnSubscribe(s -> {
+                    if (log.isDebugEnabled()) {
+                        try {
+                            log.debug("[AI-REQ(stream)] {}", mapper
+                                    .writerWithDefaultPrettyPrinter()
+                                    .writeValueAsString(reqPreview));
+                        } catch (Exception ignore) {}
+                    }
+                });
+    }
+
+    // 累积流式 delta，完成时输出一个“助手决策快照”节点（role/content/tool_calls）
+    private static final class StreamDebugAgg {
+        private final ObjectMapper mapper;
+        private final StringBuilder content = new StringBuilder(4096);
+        // 用 id 去重；value 结构：{ "id": "...", "type":"function", "function":{ "name":"...", "arguments":"..." } }
+        private final LinkedHashMap<String, ObjectNode> toolCalls = new LinkedHashMap<>();
+
+        StreamDebugAgg(ObjectMapper mapper) { this.mapper = mapper; }
+
+        void acceptChunk(String chunkJson) {
+            try {
+                JsonNode root = mapper.readTree(chunkJson);
+                JsonNode delta = root.path("choices").path(0).path("delta");
+                if (!delta.isMissingNode()) {
+                    // 1) 拼接文本
+                    String part = delta.path("content").asText(null);
+                    if (part != null && !part.isEmpty()) content.append(part);
+
+                    // 2) 累积 tool_calls（你的 formatStreamChunk 每个 chunk 会带完整的 function/name/arguments）
+                    JsonNode tcArr = delta.path("tool_calls");
+                    if (tcArr.isArray()) {
+                        for (JsonNode tc : tcArr) {
+                            String id = tc.path("id").asText("call-" + System.nanoTime());
+                            ObjectNode normalized = normalizeToolCall(tc);
+                            toolCalls.put(id, normalized); // 同 id 覆盖，得到最后一次 arguments
+                        }
+                    }
+                }
+            } catch (Exception ignore) { /* 忽略坏片段 */ }
+        }
+
+        // 统一成 assistant.tool_calls 的 OpenAI 结构
+        private ObjectNode normalizeToolCall(JsonNode tc) {
+            ObjectNode out = mapper.createObjectNode();
+            out.put("id", tc.path("id").asText(""));
+            out.put("type", tc.path("type").asText("function"));
+            ObjectNode fn = out.putObject("function");
+            fn.put("name", tc.path("function").path("name").asText(""));
+            // 注意：arguments 要保持字符串
+            String args = tc.path("function").path("arguments").asText("{}");
+            fn.put("arguments", args);
+            return out;
+        }
+
+        ObjectNode assistantNode() {
+            ObjectNode n = mapper.createObjectNode();
+            n.put("role", "assistant");
+            n.put("content", content.toString());
+            if (!toolCalls.isEmpty()) {
+                ArrayNode tcs = n.putArray("tool_calls");
+                toolCalls.values().forEach(tcs::add);
+            }
+            return n;
+        }
     }
 
     private Prompt toPrompt(Map<String, Object> payload, AiProperties.Mode mode) {

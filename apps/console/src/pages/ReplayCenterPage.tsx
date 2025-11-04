@@ -44,7 +44,7 @@ export default function ReplayCenterPage() {
             form: {
                 userId: "用户 ID",
                 convId: "会话 ID",
-                stepId: "Step ID（可选，回放到该步含之前）",
+                stepId: "Step ID（可选）",
                 limit: "Limit（条数上限）",
                 start: "开始回放",
                 stop: "停止",

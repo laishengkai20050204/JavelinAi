@@ -15,6 +15,8 @@ public class EffectiveProps {
     private final AiProperties statics;
     private final RuntimeConfigService runtime;
     private final Environment env;
+    public Boolean streamDecision() { return Boolean.TRUE.equals(this.streamDecisionFlag); }
+    private Boolean streamDecisionFlag = true;
 
     private RuntimeConfig rc() { return runtime.view(); }
 
@@ -29,6 +31,8 @@ public class EffectiveProps {
         // 2) 静态回退
         return (statics.getCompatibility() != null) ? statics.getMode() : AiProperties.Mode.OPENAI;
     }
+
+
 
     // 备用：给网关内部把“入�?mode”与运行时做合并
     public AiProperties.Mode modeOr(AiProperties.Mode fallback) {

@@ -91,6 +91,7 @@ public class SinglePathChatService {
             sink.next(StepEvent.finished(st.stepId(), st.loop()));
             emitJsonToSse(st.stepId(), "finished", Map.of("stepId", st.stepId(), "loop", st.loop()));
             sseHub.complete(st.stepId()); // 清理该 step 管道
+            streamMgr.clear(st.stepId());   // ← 新增：清理“最终续写流”的 holder
             sink.complete();
 
             // 若有：decisionService.clearStep(st.stepId());
@@ -103,6 +104,7 @@ public class SinglePathChatService {
 
         if (cancelled.get()) {
             sseHub.complete(st.stepId());  // 新增
+            streamMgr.clear(st.stepId());   // ← 新增
             sink.complete();
             return;
         }
@@ -164,15 +166,15 @@ public class SinglePathChatService {
                                     if (allCalls.isEmpty()) {
                                         String draft = org.springframework.util.StringUtils.hasText(decision.assistantDraft())
                                                 ? decision.assistantDraft() : null;
-//                                        if (draft != null) {
-//                                            Map<String, Object> payload = new LinkedHashMap<>();
-//                                            payload.put("stepId", st.stepId());
-//                                            payload.put("type", "assistant");
-//                                            payload.put("text", draft);
-//                                            return continuationService.appendAssistantToMemory(st.stepId(), draft)
-//                                                    .thenReturn(StepTransition.of(withHash.finish(FinishReason.DONE), List.of(StepEvent.step(payload))));
-//
-//                                        }
+                                        if (draft != null) {
+                                            Map<String, Object> payload = new LinkedHashMap<>();
+                                            payload.put("stepId", st.stepId());
+                                            payload.put("type", "assistant");
+                                            payload.put("text", draft);
+                                            return continuationService.appendAssistantToMemory(st.stepId(), draft)
+                                                    .thenReturn(StepTransition.of(withHash.finish(FinishReason.DONE), List.of(StepEvent.step(payload))));
+
+                                        }
                                         return continueAnswer(withHash, ctx);
                                     }
 
@@ -241,24 +243,24 @@ public class SinglePathChatService {
                                             // 没有 clientCalls，则按草稿/续写兜底
                                             String draft = org.springframework.util.StringUtils.hasText(decision.assistantDraft())
                                                     ? decision.assistantDraft() : null;
-//                                            if (draft != null) {
-//                                                Map<String, Object> payload = new LinkedHashMap<>();
-//                                                payload.put("stepId", st.stepId());
-//                                                payload.put("type", "assistant");
-//                                                payload.put("text", draft);
-//                                                return continuationService.appendAssistantToMemory(st.stepId(), draft)
-//                                                        .thenReturn(StepTransition.of(withHash.finish(FinishReason.DONE), List.of(
-//                                                                decisionEvent,
-//                                                                StepEvent.step(payload)
-//                                                        )));
-//                                            } else {
+                                            if (draft != null) {
+                                                Map<String, Object> payload = new LinkedHashMap<>();
+                                                payload.put("stepId", st.stepId());
+                                                payload.put("type", "assistant");
+                                                payload.put("text", draft);
+                                                return continuationService.appendAssistantToMemory(st.stepId(), draft)
+                                                        .thenReturn(StepTransition.of(withHash.finish(FinishReason.DONE), List.of(
+                                                                decisionEvent,
+                                                                StepEvent.step(payload)
+                                                        )));
+                                            } else {
                                                 return continueAnswer(withHash, ctx).map(tr -> {
                                                     List<StepEvent> merged = new ArrayList<>();
                                                     merged.add(decisionEvent);
                                                     merged.addAll(tr.events());
                                                     return StepTransition.of(tr.nextState(), merged);
                                                 });
-//                                            }
+                                            }
                                         }
                                     }
 
@@ -285,17 +287,17 @@ public class SinglePathChatService {
                                     // 理论上到不了这里；兜底：草稿/续写
                                     String draft = org.springframework.util.StringUtils.hasText(decision.assistantDraft())
                                             ? decision.assistantDraft() : null;
-//                                    if (draft != null) {
-//                                        Map<String, Object> payload = new LinkedHashMap<>();
-//                                        payload.put("stepId", st.stepId());
-//                                        payload.put("type", "assistant");
-//                                        payload.put("text", draft);
-//                                        return continuationService.appendAssistantToMemory(st.stepId(), draft)
-//                                                .thenReturn(StepTransition.of(withHash.finish(FinishReason.DONE), List.of(
-//                                                        decisionEvent,
-//                                                        StepEvent.step(payload)
-//                                                )));
-//                                    }
+                                    if (draft != null) {
+                                        Map<String, Object> payload = new LinkedHashMap<>();
+                                        payload.put("stepId", st.stepId());
+                                        payload.put("type", "assistant");
+                                        payload.put("text", draft);
+                                        return continuationService.appendAssistantToMemory(st.stepId(), draft)
+                                                .thenReturn(StepTransition.of(withHash.finish(FinishReason.DONE), List.of(
+                                                        decisionEvent,
+                                                        StepEvent.step(payload)
+                                                )));
+                                    }
                                     return continueAnswer(withHash, ctx).map(tr -> {
                                         List<StepEvent> merged = new ArrayList<>();
                                         merged.add(decisionEvent);
