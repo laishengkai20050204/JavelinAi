@@ -139,15 +139,16 @@ public class SpringAiChatGateway {
                     }
                 })
                 // 可选：在订阅时回显“请求预览”，方便串起请求-响应
-                .doOnSubscribe(s -> {
-                    if (log.isDebugEnabled()) {
-                        try {
-                            log.debug("[AI-REQ(stream)] {}", mapper
-                                    .writerWithDefaultPrettyPrinter()
-                                    .writeValueAsString(reqPreview));
-                        } catch (Exception ignore) {}
-                    }
-                });
+//                .doOnSubscribe(s -> {
+//                    if (log.isDebugEnabled()) {
+//                        try {
+//                            log.debug("[AI-REQ(stream)] {}", mapper
+//                                    .writerWithDefaultPrettyPrinter()
+//                                    .writeValueAsString(reqPreview));
+//                        } catch (Exception ignore) {}
+//                    }
+//                })
+                ;
     }
 
     // 累积流式 delta，完成时输出一个“助手决策快照”节点（role/content/tool_calls）

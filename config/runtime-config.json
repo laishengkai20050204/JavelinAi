@@ -1,11 +1,11 @@
 {
-  "compatibility" : null,
-  "model" : null,
+  "compatibility" : "OPENAI",
+  "model" : "qwen3:8b",
   "toolsMaxLoops" : 10,
   "toolToggles" : { },
-  "baseUrl" : null,
+  "baseUrl" : "http://localhost:11434",
   "apiKey" : null,
-  "clientTimeoutMs" : null,
-  "streamTimeoutMs" : null,
-  "memoryMaxMessages" : null
+  "clientTimeoutMs" : 180000,
+  "streamTimeoutMs" : 240000,
+  "memoryMaxMessages" : 12
 }

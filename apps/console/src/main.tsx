@@ -9,7 +9,7 @@ import "./styles/hljs.css";
 // 懒加载页面
 const AdminRoot = React.lazy(() => import("./pages/AdminRoot"));
 const RuntimeConfigPage = React.lazy(() => import("./pages/RuntimeConfigPage"));
-const ReplayCenterConsole = React.lazy(() => import("./components/ReplayCenterConsole"));
+const ReplayCenterPage = React.lazy(() => import("./pages/ReplayCenterPage"));
 const AuditConsolePage = React.lazy(() => import("./pages/AuditConsolePage"));
 const NdjsonSseDemoPage = React.lazy(() => import("./pages/NdjsonSseDemoPage"));
 
@@ -61,7 +61,7 @@ function RouterTree() {
                     element={
                         <PageTransition>
                             <Suspense fallback={<div className="p-8 text-sm opacity-70">Loading replay…</div>}>
-                                <ReplayCenterConsole />
+                                <ReplayCenterPage />
                             </Suspense>
                         </PageTransition>
                     }

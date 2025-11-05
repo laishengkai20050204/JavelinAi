@@ -1,12 +1,14 @@
+// src/pages/ReplayCenterPage.tsx
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import {
     Play, Square, Download, Filter, RefreshCw, Languages,
     Clipboard, ClipboardCheck, Binary, MessageSquare, Workflow, Wrench
 } from "lucide-react";
-import { readNdjson } from "../lib/ndjson"; // 若没有该文件，可用文末“内联版本”代替
+import { readNdjson } from "../lib/ndjson";
+import SafeMarkdown from "../components/SafeMarkdown";
 
-/* ===== 事件类型（去掉 any） ===== */
+/* ===== 事件类型 ===== */
 type MessageData = { type: "message"; role?: string; text?: string };
 type DecisionData = { type: "decision"; tool_calls?: unknown };
 type ToolPayload = { exitCode?: number; [k: string]: unknown };
@@ -24,17 +26,11 @@ type ReplayEvent =
     | FinishedEvent
     | GenericEvent;
 
-/** 回放中心（与 AdminConfigConsole 同风格） */
 export default function ReplayCenterPage() {
-    // ===== i18n =====
+    /* ===== i18n ===== */
     type Lang = "zh" | "en";
     const [lang, setLang] = useState<Lang>(() => {
-        try {
-            if (typeof navigator !== "undefined") {
-                return navigator.language?.toLowerCase().startsWith("zh") ? "zh" : "en";
-            }
-        } catch { /* empty */ }
-        return "zh";
+        try { return navigator.language?.toLowerCase().startsWith("zh") ? "zh" : "en"; } catch { return "zh"; }
     });
 
     const i18n = {
@@ -42,19 +38,14 @@ export default function ReplayCenterPage() {
             title: "Javelin 回放中心",
             subtitle: "按行解析 NDJSON · 工具/决策/消息可视化",
             form: {
-                userId: "用户 ID",
-                convId: "会话 ID",
-                stepId: "Step ID（可选）",
-                limit: "Limit（条数上限）",
-                start: "开始回放",
-                stop: "停止",
-                exportJson: "导出 JSON",
-                exportNdjson: "导出 NDJSON",
-                filter: "筛选",
-                refresh: "清空事件",
+                userId: "用户 ID", convId: "会话 ID", stepId: "Step ID（可选）",
+                limit: "Limit（条数上限）", start: "开始回放", stop: "停止",
+                exportJson: "导出 JSON", exportNdjson: "导出 NDJSON",
+                filter: "筛选", refresh: "清空事件",
             },
             banners: { streaming: "正在流式回放...", stopped: "回放已停止", empty: "暂时没有事件", copied: "已复制" },
             filters: { msg: "消息", dec: "决策", tool: "工具", other: "其它" },
+            view: { raw: "Raw", md: "Markdown", hl: "高亮" },
         },
         en: {
             title: "Javelin Replay Center",
@@ -67,11 +58,16 @@ export default function ReplayCenterPage() {
             },
             banners: { streaming: "Streaming replay...", stopped: "Replay stopped", empty: "No events yet", copied: "Copied" },
             filters: { msg: "Message", dec: "Decision", tool: "Tool", other: "Other" },
+            view: { raw: "Raw", md: "Markdown", hl: "Highlight" },
         },
     } as const;
     const t = i18n[lang];
 
-    // ===== state =====
+    /* ===== 与 NdjsonSseDemoPage 相同的视图切换 ===== */
+    const [mdView, setMdView] = useState<boolean>(true);
+    const [highlightOn, setHighlightOn] = useState<boolean>(true);
+
+    /* ===== state ===== */
     const [userId, setUserId] = useState("u1");
     const [conversationId, setConversationId] = useState("c1");
     const [stepId, setStepId] = useState<string>("");
@@ -91,7 +87,7 @@ export default function ReplayCenterPage() {
 
     useEffect(() => () => abortRef.current?.abort(), []);
 
-    // derived
+    /* ===== derived ===== */
     const filteredEvents = useMemo(() => {
         return events.filter((e) => {
             const typ = getEventType(e);
@@ -115,7 +111,6 @@ export default function ReplayCenterPage() {
         setLoading(true);
         setEvents([]);
 
-        // 走 Vite 代理/同源路径，避免 CORS
         const qs = new URLSearchParams({ userId, conversationId, limit: String(limit) });
         if (stepId) qs.set("stepId", stepId);
         const url = `/ai/replay/ndjson?${qs.toString()}`;
@@ -150,9 +145,15 @@ export default function ReplayCenterPage() {
 
     const bannerText = loading ? t.banners.streaming : (events.length === 0 ? t.banners.empty : t.banners.stopped);
 
-    // ===== UI =====
     return (
         <div className="min-h-screen w-full bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
+            {/* 覆盖 hljs 背景为透明，防止黑底 */}
+            <style>{`
+        .prose pre code.hljs { background: transparent !important; }
+        .prose code.hljs     { background: transparent !important; }
+        code.hljs            { background: transparent !important; }
+      `}</style>
+
             {/* Header */}
             <header className="sticky top-0 z-10 border-b bg-white/80 backdrop-blur supports-[backdrop-filter]:bg-white/60 dark:border-slate-800 dark:bg-slate-900/80 dark:supports-[backdrop-filter]:bg-slate-900/60">
                 <div className="mx-auto max-w-6xl px-4 py-3 flex items-center justify-between">
@@ -194,9 +195,9 @@ export default function ReplayCenterPage() {
                     <Banner icon={<RefreshCw className={loading ? "animate-spin" : ""} size={16} />} text={bannerText} color={loading ? "slate" : "green"} />
                 </div>
 
-                {/* Form */}
                 <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }}
                             className="rounded-2xl border bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+                    {/* 查询区 */}
                     <Section title={lang === "zh" ? "查询条件" : "Query"}>
                         <div className="grid gap-4 md:grid-cols-4">
                             <Field label={t.form.userId}>
@@ -219,68 +220,108 @@ export default function ReplayCenterPage() {
                         </div>
                     </Section>
 
+                    {/* 操作区 */}
                     <Section title={lang === "zh" ? "操作" : "Actions"}>
                         <div className="flex flex-wrap items-center gap-2 md:sticky md:bottom-4 md:z-10 md:rounded-2xl md:border md:border-slate-200 md:bg-slate-50/80 md:p-3 md:backdrop-blur md:supports-[backdrop-filter]:bg-slate-50/60 transition-colors dark:md:border-slate-800 dark:md:bg-slate-900/70 dark:md:supports-[backdrop-filter]:bg-slate-900/60">
                             <button onClick={startReplay} disabled={loading}
-                                    className={`inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-medium ${loading ? "bg-slate-300 text-white dark:bg-slate-700" : "bg-blue-600 text-white hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-400"}`}>
-                                <Play size={16}/>{t.form.start}
+                                    className={`inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-medium text-white ${loading ? "bg-slate-400 dark:bg-slate-600" : "bg-blue-600 hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-400"}`}>
+                                <Play className="h-4 w-4" /> {t.form.start}
                             </button>
-                            <button onClick={stopReplay}
-                                    className="inline-flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:hover:bg-slate-700">
-                                <Square size={16}/>{t.form.stop}
+                            <button onClick={stopReplay} disabled={!loading}
+                                    className="inline-flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-60 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:hover:bg-slate-700">
+                                <Square className="h-4 w-4" /> {t.form.stop}
                             </button>
+
+                            <span className="mx-2 opacity-50">|</span>
+                            <button onClick={exportAsJson}
+                                    className="inline-flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:hover:bg-slate-700">
+                                <Download size={14} /> {t.form.exportJson}
+                            </button>
+                            <button onClick={exportAsNdjson}
+                                    className="inline-flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:hover:bg-slate-700">
+                                <Download size={14} /> {t.form.exportNdjson}
+                            </button>
+
+                            <span className="mx-2 opacity-50">|</span>
                             <button onClick={clearEvents}
-                                    className="inline-flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:hover:bg-slate-700">
-                                <RefreshCw size={16}/>{t.form.refresh}
+                                    className="inline-flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:hover:bg-slate-700">
+                                <RefreshCw size={14} /> {t.form.refresh}
                             </button>
 
-                            <span className="mx-2 text-slate-400">|</span>
-                            <button onClick={exportAsJson} disabled={events.length === 0}
-                                    className="inline-flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:hover:bg-slate-700">
-                                <Download size={16}/>{t.form.exportJson}
-                            </button>
-                            <button onClick={exportAsNdjson} disabled={events.length === 0}
-                                    className="inline-flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:hover:bg-slate-700">
-                                <Download size={16}/>{t.form.exportNdjson}
-                            </button>
+                            {/* 过滤切换 + 图标，确保 Filter 被使用 */}
+                            <div className="ml-auto inline-flex items-center gap-2 rounded-xl border border-slate-300 bg-white p-1 text-xs dark:border-slate-700 dark:bg-slate-800">
+                                <Filter size={14} />
+                                <span className="px-1 opacity-70">{t.form.filter}:</span>
+                                <label className="inline-flex items-center gap-1 rounded-lg px-2 py-1 hover:bg-black/5 dark:hover:bg-white/5">
+                                    <input type="checkbox" checked={showMsg} onChange={(e) => setShowMsg(e.target.checked)} />
+                                    msg
+                                </label>
+                                <label className="inline-flex items-center gap-1 rounded-lg px-2 py-1 hover:bg-black/5 dark:hover:bg-white/5">
+                                    <input type="checkbox" checked={showDec} onChange={(e) => setShowDec(e.target.checked)} />
+                                    dec
+                                </label>
+                                <label className="inline-flex items-center gap-1 rounded-lg px-2 py-1 hover:bg-black/5 dark:hover:bg-white/5">
+                                    <input type="checkbox" checked={showTool} onChange={(e) => setShowTool(e.target.checked)} />
+                                    tool
+                                </label>
+                                <label className="inline-flex items-center gap-1 rounded-lg px-2 py-1 hover:bg-black/5 dark:hover:bg-white/5">
+                                    <input type="checkbox" checked={showOther} onChange={(e) => setShowOther(e.target.checked)} />
+                                    other
+                                </label>
+                            </div>
 
-                            <span className="mx-2 text-slate-400">|</span>
-                            <div className="inline-flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-800">
-                                <Filter size={16}/>
-                                <label className="inline-flex items-center gap-1">
-                                    <input type="checkbox" className="accent-blue-600 dark:accent-blue-400" checked={showMsg} onChange={(e)=>setShowMsg(e.target.checked)}/>
-                                    {t.filters.msg}
-                                </label>
-                                <label className="inline-flex items-center gap-1">
-                                    <input type="checkbox" className="accent-blue-600 dark:accent-blue-400" checked={showDec} onChange={(e)=>setShowDec(e.target.checked)}/>
-                                    {t.filters.dec}
-                                </label>
-                                <label className="inline-flex items-center gap-1">
-                                    <input type="checkbox" className="accent-blue-600 dark:accent-blue-400" checked={showTool} onChange={(e)=>setShowTool(e.target.checked)}/>
-                                    {t.filters.tool}
-                                </label>
-                                <label className="inline-flex items-center gap-1">
-                                    <input type="checkbox" className="accent-blue-600 dark:accent-blue-400" checked={showOther} onChange={(e)=>setShowOther(e.target.checked)}/>
-                                    {t.filters.other}
-                                </label>
+                            {/* Raw / Markdown / 高亮 切换（与 NdjsonSseDemoPage 一致，确保 setMdView / setHighlightOn 被使用） */}
+                            <div className="inline-flex items-center gap-1 rounded-xl border border-slate-300 bg-white p-1 text-xs dark:border-slate-700 dark:bg-slate-800">
+                                <button
+                                    onClick={() => setMdView(false)}
+                                    className={`px-2 py-1 rounded-lg ${!mdView ? "bg-slate-200 dark:bg-slate-700" : ""}`}
+                                >
+                                    {t.view.raw}
+                                </button>
+                                <button
+                                    onClick={() => setMdView(true)}
+                                    className={`px-2 py-1 rounded-lg ${mdView ? "bg-slate-200 dark:bg-slate-700" : ""}`}
+                                >
+                                    {t.view.md}
+                                </button>
+                                {mdView && (
+                                    <>
+                                        <span className="mx-1 opacity-40">|</span>
+                                        <button
+                                            onClick={() => setHighlightOn(v => !v)}
+                                            className={`px-2 py-1 rounded-lg ${highlightOn ? "bg-slate-200 dark:bg-slate-700" : ""}`}
+                                        >
+                                            {t.view.hl}
+                                        </button>
+                                    </>
+                                )}
                             </div>
                         </div>
                     </Section>
 
+                    {/* 事件流 */}
                     <Section title={lang === "zh" ? "事件流" : "Event Stream"}>
-                        <div ref={scrollerRef} className="border rounded-xl bg-black text-green-100 p-2 h-[460px] overflow-auto text-sm">
+                        <div
+                            ref={scrollerRef}
+                            className="border rounded-xl p-2 h-[460px] overflow-auto text-sm
+                         bg-slate-50 text-slate-800 border-slate-200
+                         dark:bg-slate-900 dark:text-slate-100 dark:border-slate-800
+                         transition-colors duration-300"
+                        >
                             {filteredEvents.length === 0 ? (
-                                <div className="text-slate-400 p-3">{bannerText}</div>
+                                <div className="text-slate-500 dark:text-slate-400 p-3">{bannerText}</div>
                             ) : (
                                 filteredEvents.map((e, idx) => (
                                     <EventRow
                                         key={idx}
                                         e={e}
                                         lang={lang}
-                                        onCopy={()=>{
-                                            navigator.clipboard.writeText(JSON.stringify(e, null, 2)).then(()=>{
+                                        mdView={mdView}
+                                        highlightOn={highlightOn}
+                                        onCopy={() => {
+                                            navigator.clipboard.writeText(JSON.stringify(e, null, 2)).then(() => {
                                                 setCopiedIdx(idx);
-                                                setTimeout(()=>setCopiedIdx(null), 1200);
+                                                setTimeout(() => setCopiedIdx(null), 1200);
                                             });
                                         }}
                                         copied={copiedIdx === idx}
@@ -295,7 +336,7 @@ export default function ReplayCenterPage() {
     );
 }
 
-/* ========== UI helpers（复用你原有的视觉语义） ========== */
+/* ========== UI helpers ========== */
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
     return (
         <section className="py-4">
@@ -326,9 +367,12 @@ function Banner({ icon, text, color }: { icon: React.ReactNode; text: string; co
     );
 }
 
-/* ===== 子项：只接收必需 props，避免 TS6133/TS2741 ===== */
-function EventRow({ e, onCopy, copied, lang }: {
+/* ===== 子项：事件行（用 SafeMarkdown，风格与 NdjsonSseDemoPage 一致） ===== */
+function EventRow({
+                      e, onCopy, copied, lang, mdView, highlightOn,
+                  }: {
     e: ReplayEvent; onCopy: () => void; copied: boolean; lang: "zh" | "en";
+    mdView: boolean; highlightOn: boolean;
 }) {
     const typ = getEventType(e);
     const ts = getString(asRecord(e), "ts") ?? "";
@@ -336,22 +380,43 @@ function EventRow({ e, onCopy, copied, lang }: {
         : typ === "decision" ? <Workflow size={14}/>
             : typ === "tool" ? <Wrench size={14}/>
                 : <Binary size={14}/>;
+
+    const md = formatEventMarkdown(e, lang);
+
     return (
-        <div className="flex items-start gap-2 px-2 py-1 hover:bg-white/5 rounded-lg">
+        <div className="flex items-start gap-2 px-3 py-2 rounded-xl border
+                    bg-transparent border-slate-200 dark:border-slate-800
+                    hover:bg-slate-100/60 dark:hover:bg-white/5 transition-colors">
             <div className="mt-0.5">{icon}</div>
             <div className="flex-1">
-                <div className="text-[11px] text-slate-400">{ts} · {typ || getString(asRecord(e), "event")}</div>
-                <div className="whitespace-pre-wrap leading-relaxed">{formatEventLine(e, lang)}</div>
+                <div className="text-[11px] text-slate-500 dark:text-slate-400">{ts} · {typ || getString(asRecord(e), "event")}</div>
+
+                {mdView ? (
+                    <div
+                        className="prose prose-sm max-w-none dark:prose-invert
+                       prose-pre:bg-slate-100 prose-pre:text-slate-800
+                       dark:prose-pre:bg-slate-800 dark:prose-pre:text-slate-100
+                       prose-code:bg-slate-100 prose-code:text-slate-800
+                       dark:prose-code:bg-slate-900 dark:prose-code:text-slate-100
+                       prose-code:before:content-[''] prose-code:after:content-['']"
+                    >
+                        <SafeMarkdown source={md} allowHtml={false} highlight={highlightOn}/>
+                    </div>
+                ) : (
+                    <pre className="mt-1 rounded-xl bg-slate-100 text-slate-800 dark:bg-slate-800 dark:text-slate-100 p-2 overflow-auto whitespace-pre-wrap break-words">
+            {toDisplayMultiline(md)}
+          </pre>
+                )}
             </div>
-            <button onClick={onCopy} className="ml-2 opacity-80 hover:opacity-100">
+            <button onClick={onCopy} className="ml-2 opacity-80 hover:opacity-100" title={lang === "zh" ? "复制 JSON" : "Copy JSON"}>
                 {copied ? <ClipboardCheck size={14}/> : <Clipboard size={14}/>}
             </button>
         </div>
     );
 }
 
-/* ===== 文本格式（升级版：把 \n 变成真换行，并美化 tool_calls） ===== */
-function formatEventLine(e: ReplayEvent, lang: "zh"|"en") {
+/* ===== 文本格式（与之前一致，但输出给 SafeMarkdown） ===== */
+function formatEventMarkdown(e: ReplayEvent, lang: "zh"|"en") {
     const data = asRecord(asRecord(e)["data"]);
     const typ = getEventType(e);
 
@@ -359,56 +424,60 @@ function formatEventLine(e: ReplayEvent, lang: "zh"|"en") {
         const role = getString(data, "role") ?? "assistant";
         const textRaw = getString(data, "text") ?? "";
         const text = toDisplayMultiline(textRaw);
-        return `[${role}] ${text}`;
+        const hdr = `**[${role}]**`;
+        return `${hdr}\n\n${text}`;
     }
+
     if (typ === "decision") {
         const calls = data["tool_calls"];
-        const header = lang === "zh" ? "🤖 决策工具:" : "🤖 Decide tools:";
-        return header + "\n" + prettyToolCalls(calls, lang);
+        const header = lang === "zh" ? "🤖 **决策工具**" : "🤖 **Decide tools**";
+        const body = prettyToolCallsAsMarkdown(calls, lang);
+        return `${header}\n\n${body}`;
     }
+
     if (typ === "tool") {
         const name = getString(data, "name") ?? "tool";
         const reused = getBoolean(data, "reused") ? (lang === "zh" ? "复用" : "reused") : (lang === "zh" ? "新执行" : "fresh");
         const payload = asRecord(data["data"]);
         const exitCode = getNumber(payload, "exitCode");
         const text = toDisplayMultiline(getString(data, "text") ?? "");
-        return `🛠 ${name} (${reused})` + (exitCode !== undefined ? ` exit=${exitCode}` : "") + (text ? `\n${text}` : "");
+        const head = `🛠 **${name}** (${reused})${exitCode !== undefined ? ` · exit=${exitCode}` : ""}`;
+        if (text) return `${head}\n\n${wrapMaybeAsCode(text)}`;
+        return head;
     }
-    if (getString(asRecord(e), "event") === "started")  return (lang === "zh" ? "▶ 开始回放" : "▶ Replay started");
-    if (getString(asRecord(e), "event") === "finished") return (lang === "zh" ? "■ 回放结束" : "■ Replay finished");
-    return JSON.stringify(e);
+
+    if (getString(asRecord(e), "event") === "started")  return (lang === "zh" ? "▶ **开始回放**" : "▶ **Replay started**");
+    if (getString(asRecord(e), "event") === "finished") return (lang === "zh" ? "■ **回放结束**" : "■ **Replay finished**");
+    return "```json\n" + safeJSONStringify(e, 2) + "\n```";
 }
 
-/* ===== Helpers：漂亮打印决策里的 tool_calls（含反转义与截断） ===== */
-function prettyToolCalls(calls: unknown, lang: "zh" | "en") {
+function prettyToolCallsAsMarkdown(calls: unknown, lang: "zh" | "en"): string {
     const arr = Array.isArray(calls) ? calls : [];
+    const label = lang === "zh" ? "参数" : "Args";
     return arr.map((c, i: number) => {
         const r = asRecord(c);
         const func = asRecord(r["function"]);
-        const name = getString(func, "name") || getString(r, "name") || getString(r, "id") || "tool";
+        const name =
+            getString(func, "name") ||
+            getString(r, "name") ||
+            getString(r, "id") ||
+            "tool";
         const rawArgs = func["arguments"] ?? r["arguments"];
         const parsed = deepTryParseJson(rawArgs);
-        const shown  = summarizeArgsForDisplay(parsed);
-        const idxStr = `#${i + 1}`;
-        const label  = lang === "zh" ? "参数" : "args";
-        return `${idxStr} ${name}\n${label}: ${shown}`;
+        const title = `#${i + 1} ${name}`;
+        return `${title}\n\n**${label}**\n\`\`\`json\n${safeJSONStringify(parsed, 2)}\n\`\`\``;
     }).join("\n\n");
 }
 
-/** 把字符串里“字面量 \n / \r\n / \t”转成真实换行与制表符 */
-function toDisplayMultiline(v: unknown): string {
-    if (typeof v !== "string") return (v ?? "") as string;
-    // 尝试用 JSON 反转义一次（对包含 \uXXXX 也有效）
-    try {
-        const unescaped = JSON.parse(`"${v.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`);
-        return unescaped as string;
-    } catch {
-        // 兜底：简单替换
-        return v.replace(/\\r\\n/g, "\n").replace(/\\n/g, "\n").replace(/\\t/g, "\t");
-    }
+function wrapMaybeAsCode(s: string): string {
+    const looksLikeCode = /(;|{|}|\bclass\b|\bdef\b|\bfunction\b|\b#include\b|import\s+\w+)/.test(s) || s.includes("\n");
+    if (!looksLikeCode) return s;
+    const lang = /\b#include\b/.test(s) ? "cpp" : (/\bdef\b/.test(s) ? "python" : "");
+    return `\`\`\`${lang}\n${s}\n\`\`\``;
 }
-
-/** 尝试把字符串 JSON 解到对象；若本身是对象则原样返回 */
+function safeJSONStringify(v: unknown, space = 0) {
+    try { return JSON.stringify(v, null, space); } catch { return String(v); }
+}
 function deepTryParseJson(v: unknown): unknown {
     if (typeof v !== "string") return v;
     try {
@@ -422,64 +491,6 @@ function deepTryParseJson(v: unknown): unknown {
     }
 }
 
-/** 美化参数：对超长字符串/代码字段做摘要 + 反转义 \n */
-function summarizeArgsForDisplay(args: unknown): string {
-    const MAX_STR = 160;   // 展示字符串长度上限
-    const MAX_LINES = 12;  // 代码最多展示行数
-
-    if (args == null) return "null";
-    if (typeof args === "number" || typeof args === "boolean") return String(args);
-
-    // 字符串：直接返回“解转义后的真实文本”
-    if (typeof args === "string") {
-        const s0 = toDisplayMultiline(args);
-        return s0.length > MAX_STR ? s0.slice(0, MAX_STR) + "…" : s0;
-    }
-
-    // 数组：先反转义字符串元素，然后 stringify
-    if (Array.isArray(args)) {
-        const arr = args.map((v) => (typeof v === "string" ? toDisplayMultiline(v) : v));
-        try { return toDisplayMultiline(JSON.stringify(arr, null, 2)); } catch { return String(arr); }
-    }
-
-    // 对象：反转义所有字符串字段，裁剪 code 与超长字段
-    if (typeof args === "object") {
-        const obj = { ...(args as Record<string, unknown>) };
-
-        // 反转义所有 string 字段
-        for (const k of Object.keys(obj)) {
-            const v = obj[k];
-            if (typeof v === "string") obj[k] = toDisplayMultiline(v);
-        }
-
-        // 针对 code 字段做行数裁剪
-        if (Object.prototype.hasOwnProperty.call(obj, "code")) {
-            const code = String(obj["code"] ?? "");
-            const lines = code.split(/\r?\n/);
-            const head  = lines.slice(0, MAX_LINES).join("\n");
-            const more  = lines.length > MAX_LINES ? `\n…(${lines.length - MAX_LINES} more lines)` : "";
-            obj["code"] = head + more;
-        }
-
-        // 对其它很长的字符串裁剪
-        for (const k of Object.keys(obj)) {
-            if (k === "code") continue;
-            const v = obj[k];
-            if (typeof v === "string" && v.length > MAX_STR) {
-                obj[k] = v.slice(0, MAX_STR) + "…";
-            }
-        }
-
-        try { return toDisplayMultiline(JSON.stringify(obj, null, 2)); } catch { return String(obj); }
-    }
-
-    try {
-        return toDisplayMultiline(JSON.stringify(args, null, 2));
-    } catch {
-        return String(args);
-    }
-}
-
 /* ===================== utils ===================== */
 function triggerDownload(blob: Blob, filename: string) {
     const a = document.createElement("a");
@@ -489,7 +500,7 @@ function triggerDownload(blob: Blob, filename: string) {
     URL.revokeObjectURL(a.href);
 }
 
-/* ====== 类型辅助与守卫（无逻辑改动，仅为避免 any） ====== */
+/* ====== 类型辅助与守卫 ====== */
 function asRecord(v: unknown): Record<string, unknown> {
     return (v !== null && typeof v === "object") ? (v as Record<string, unknown>) : {};
 }
@@ -511,26 +522,15 @@ function getEventType(e: ReplayEvent): "message" | "decision" | "tool" | undefin
     return t === "message" || t === "decision" || t === "tool" ? t : undefined;
 }
 
-/* ========== 若你没有 ../lib/ndjson，可改用内联版本（去掉上面的 import） ==========
-async function readNdjson(url: string, onEvent: (obj: unknown) => void, signal?: AbortSignal) {
-  const r = await fetch(url, { headers: { "Accept": "application/x-ndjson" }, signal });
-  if (!r.body) throw new Error("No body");
-  const reader = r.body.getReader();
-  const decoder = new TextDecoder();
-  let buf = "";
-  for (;;) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buf += decoder.decode(value, { stream: true });
-    let nl;
-    while ((nl = buf.indexOf("\n")) >= 0) {
-      const line = buf.slice(0, nl).trim();
-      buf = buf.slice(nl + 1);
-      if (!line) continue;
-      try { onEvent(JSON.parse(line)); } catch { /* ignore bad line  }
+/* 把字面量 \n / \r\n / \t / \uXXXX 还原成真实字符 */
+function toDisplayMultiline(v: unknown): string {
+    if (typeof v !== "string") return (v ?? "") as string;
+    try {
+        const unescaped = JSON.parse(
+            `"${v.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`
+        );
+        return unescaped as string;
+    } catch {
+        return v.replace(/\\r\\n/g, "\n").replace(/\\n/g, "\n").replace(/\\t/g, "\t");
+    }
 }
-}
-const rest = buf.trim();
-if (rest) { try { onEvent(JSON.parse(rest)); } catch {} }
-}
-*/

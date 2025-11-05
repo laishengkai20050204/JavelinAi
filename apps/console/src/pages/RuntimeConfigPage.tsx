@@ -1,4 +1,4 @@
-import AdminConfigConsole from "../components/AdminConfigConsole";
+import AdminConfigConsole from "./AdminConfigConsole";
 
 export default function RuntimeConfigPage() {
     return <AdminConfigConsole />;

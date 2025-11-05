@@ -1,3 +1,4 @@
+// Moved from components to pages
 import React, { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import {
