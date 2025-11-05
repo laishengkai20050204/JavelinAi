@@ -126,18 +126,28 @@ public class FinalAnswerStreamManager {
                 .map(json -> ServerSentEvent.<String>builder(json).event("message").build());
     }
 
-    /** 等待纯文本（仅用于“最终续写”场景） */
-    public Mono<String> awaitFinalText(String streamId, Duration timeout) {
+    /**
+     * 等待纯文本（用于“最终续写”场景）。
+     * 空闲超时：若在 idle 时长内未收到新的 token，则认为结束并返回已累计内容。
+     */
+    public Mono<String> awaitFinalText(String streamId, Duration idle) {
         Holder h = holders.computeIfAbsent(streamId, k -> new Holder());
         return h.chunkSink.asFlux()
-                .then(Mono.fromCallable(() -> h.buf.toString()))
-                .timeout(timeout);
+                // 将“无新 token 超过 idle”视为正常完成（而不是报错）
+                .timeout(idle)
+                .onErrorResume(java.util.concurrent.TimeoutException.class, e -> Mono.empty())
+                .then(Mono.fromCallable(() -> h.buf.toString()));
     }
 
-    /** 等待聚合结果（决策流：content + tool_calls） */
-    public Mono<Aggregated> awaitAggregated(String streamId, Duration timeout) {
+    /**
+     * 等待聚合结果（决策流：content + tool_calls）。
+     * 空闲超时：若在 idle 时长内未收到新的 token，则认为结束并返回当前聚合。
+     */
+    public Mono<Aggregated> awaitAggregated(String streamId, Duration idle) {
         Holder h = holders.computeIfAbsent(streamId, k -> new Holder());
         return h.chunkSink.asFlux()
+                .timeout(idle)
+                .onErrorResume(java.util.concurrent.TimeoutException.class, e -> Mono.empty())
                 .then(Mono.fromCallable(() -> {
                     List<Map<String,Object>> toolCalls = new ArrayList<>();
                     for (var e : h.tools.entrySet()) {
@@ -153,8 +163,7 @@ public class FinalAnswerStreamManager {
                         toolCalls.add(item);
                     }
                     return new Aggregated(h.buf.toString(), toolCalls);
-                }))
-                .timeout(timeout);
+                }));
     }
 
     /** 手动清理 */

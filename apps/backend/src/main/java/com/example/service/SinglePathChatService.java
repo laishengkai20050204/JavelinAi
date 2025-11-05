@@ -442,7 +442,10 @@ public class SinglePathChatService {
         sseHub.forward(st.stepId(), streamMgr.sse(st.stepId(), effectiveProps.model()));
 
         // 3) NDJSON 等完整文本 → 落库 → 发最终事件
-        return streamMgr.awaitFinalText(st.stepId(), Duration.ofMinutes(3))
+        java.time.Duration idle = java.util.Optional.ofNullable(effectiveProps.streamTimeoutMs())
+                .map(java.time.Duration::ofMillis)
+                .orElse(java.time.Duration.ofMinutes(3));
+        return streamMgr.awaitFinalText(st.stepId(), idle)
                 .flatMap(text -> continuationService.appendAssistantToMemory(st.stepId(), text).thenReturn(text))
                 .map(text -> StepTransition.of(st.finish(FinishReason.DONE), List.of(
                         StepEvent.step(Map.of("type", "assistant", "text", text))

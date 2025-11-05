@@ -73,7 +73,10 @@ public class DecisionServiceSpringAi implements DecisionService {
             sseHub.forward(st.stepId(), streamMgr.sse(streamId, effectiveProps.model()));
 
             // 3) 等聚合结果（content + tool_calls）
-            return streamMgr.awaitAggregated(streamId, Duration.ofSeconds(90))
+            Duration idle = java.util.Optional.ofNullable(effectiveProps.streamTimeoutMs())
+                    .map(java.time.Duration::ofMillis)
+                    .orElse(java.time.Duration.ofSeconds(90));
+            return streamMgr.awaitAggregated(streamId, idle)
                     .map(agg -> {
                         // 3.1 解析 tool_calls -> List<ToolCall>
                         List<ToolCall> calls = new ArrayList<>();
