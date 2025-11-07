@@ -756,7 +756,7 @@ public class SpringAiChatGateway {
 
         if (message != null) {
             String content = message.getContent();
-            if (StringUtils.hasText(content)) delta.put("content", content);
+            if (content != null && !content.isEmpty()) delta.put("content", content);
             if (message.hasToolCalls()) {
                 ArrayNode toolCalls = delta.putArray("tool_calls");
                 for (AssistantMessage.ToolCall call : message.getToolCalls()) {

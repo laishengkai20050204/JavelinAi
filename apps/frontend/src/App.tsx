@@ -1,7 +1,7 @@
 import React from 'react';
-import ChatMinimal from './pages/ChatMinimal';
+import JavelinMinimalChat from "./pages/JavelinMinimalChat.tsx";
 
 export default function App() {
-  return <ChatMinimal />;
+  return <JavelinMinimalChat />;
 }
 

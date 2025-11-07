@@ -1,73 +1,131 @@
 // src/components/SafeMarkdown.tsx
 import React from "react";
 import ReactMarkdown from "react-markdown";
+import type { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkBreaks from "remark-breaks";
 import type { PluggableList } from "unified";
 import rehypeHighlight from "rehype-highlight";
-// 可选：仅当你确实要渲染用户提供 HTML 时才开启
 import rehypeRaw from "rehype-raw";
-import rehypeSanitize from "rehype-sanitize";
+import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 
 export interface SafeMarkdownProps {
-  source: string;
-  allowHtml?: boolean;  // 是否允许文中原生 HTML（默认 false）
-  highlight?: boolean;  // 是否启用代码高亮（默认 true）
+    source: string;
+    /** 是否允许渲染 HTML（启用时会同时开启严格白名单的 sanitize） */
+    allowHtml?: boolean;
+    /** 是否开启语法高亮（rehype-highlight） */
+    highlight?: boolean;
+    /** 关闭 prose 样式包装（自行控制外层样式） */
+    unstyled?: boolean;
+    /** 追加到 prose 容器上的 className */
+    proseClassName?: string;
 }
 
-function fixFences(md: string): string {
-  if (!md) return md;
-  let s = md.replace(/\r\n?/g, "\n");
-  // 非行首 ``` ：前面补换行
-  s = s.replace(/([^\n])```/g, "$1\n```");
-  // ```lang 后没换行（如 ```cpp#include / ```pythondef ...）
-  s = s.replace(/(^|\n)```([a-z0-9_+-]+)(?=\S)/gi, "$1```$2\n");
-  // 闭合 ``` 后面粘文字，补换行
-  s = s.replace(/```(?![a-z0-9_+-])([^\n])/gi, "```\n$1");
-  // 围栏数为奇数，最后补一个闭合
-  const n = (s.match(/```/g) || []).length;
-  if (n % 2 === 1) s += "\n```";
-  return s;
+/** 统一换行（把 CRLF/CR 归一为 LF） */
+function normalize(md: string | undefined | null) {
+    if (!md) return "";
+    return md.replace(/\r\n?/g, "\n");
 }
 
-const SafeMarkdown: React.FC<SafeMarkdownProps> = ({ source, allowHtml = false, highlight = true }) => {
-  const md = React.useMemo(() => fixFences(source ?? ""), [source]);
-
-  // — 根据系统主题动态加载 highlight.js 主题（github / github-dark）
-  React.useEffect(() => {
-    if (typeof window === "undefined") return;
-
-    let current: "light" | "dark" | null = null;
-
-    const apply = async (isDark: boolean) => {
-      const next: "light" | "dark" = isDark ? "dark" : "light";
-      if (current === next) return; // 避免重复加载
-      current = next;
-
-      if (isDark) {
-        await import("highlight.js/styles/github-dark.css");
-      } else {
-        await import("highlight.js/styles/github.css");
-      }
-    };
-
-    const mql = window.matchMedia("(prefers-color-scheme: dark)");
-    apply(mql.matches);
-
-    const onChange = (e: MediaQueryListEvent) => apply(e.matches);
-    mql.addEventListener("change", onChange);
-    return () => mql.removeEventListener("change", onChange);
-  }, []);
-
-  const rehypePlugins: PluggableList = [];
-  if (highlight) rehypePlugins.push(rehypeHighlight);
-  if (allowHtml) rehypePlugins.push(rehypeRaw, rehypeSanitize);
-
-  return (
-    <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={rehypePlugins}>
-      {md}
-    </ReactMarkdown>
-  );
+/** 基于默认 schema 的最小扩展：允许代码高亮 class（language-xxx / hljs） */
+const sanitizeSchema = {
+    ...defaultSchema,
+    attributes: {
+        ...defaultSchema.attributes,
+        code: [
+            ...(defaultSchema.attributes?.code || []),
+            ["className", /^language-[a-z0-9+-]+$/i],
+        ],
+        pre: [
+            ...(defaultSchema.attributes?.pre || []),
+            ["className", /^.+$/],
+        ],
+        span: [
+            ...(defaultSchema.attributes?.span || []),
+            ["className", /^hljs.*$/],
+        ],
+    },
 };
 
-export default SafeMarkdown;
+type CodeProps = React.DetailedHTMLProps<
+    React.HTMLAttributes<HTMLElement>,
+    HTMLElement
+> & {
+    inline?: boolean;
+    className?: string;
+    children?: React.ReactNode;
+};
+
+export default function SafeMarkdown({
+                                         source,
+                                         allowHtml = false,
+                                         highlight = true,
+                                         unstyled = false,
+                                         proseClassName = "",
+                                     }: SafeMarkdownProps) {
+    // 仅做最小预处理：换行归一
+    const md = React.useMemo(() => normalize(source), [source]);
+
+    const rehypePlugins: PluggableList = [];
+    if (highlight) rehypePlugins.push(rehypeHighlight);
+    if (allowHtml) {
+        rehypePlugins.push(rehypeRaw); // 先 raw 再 sanitize
+        rehypePlugins.push([rehypeSanitize, sanitizeSchema]);
+    } else {
+        rehypePlugins.push([rehypeSanitize, sanitizeSchema]);
+    }
+
+    const components: Components = {
+        code({ inline, className, children, ...props }: CodeProps) {
+            const hasSyntax =
+                /\blanguage-/.test(className || "") || /\bhljs\b/.test(className || "");
+
+            if (inline) {
+                const base = "rounded-md font-mono text-[0.9em] px-1 py-0.5";
+                const fallback =
+                    "bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-100";
+                return (
+                    <code className={`${base} ${hasSyntax ? "" : fallback} ${className || ""}`} {...props}>
+                        {children}
+                    </code>
+                );
+            }
+
+            // 代码块：有语法高亮 class 则用简洁边框；否则给个可读性良好的底色
+            if (hasSyntax) {
+                return (
+                    <pre className="rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm overflow-auto p-3">
+            <code className={className} {...props}>
+              {children}
+            </code>
+          </pre>
+                );
+            }
+            return (
+                <pre className="rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-slate-100 p-3 shadow-sm overflow-auto whitespace-pre-wrap break-words">
+          <code className="font-mono">{children}</code>
+        </pre>
+            );
+        },
+    };
+
+    const wrapperClass = unstyled
+        ? undefined
+        : ["prose prose-sm dark:prose-invert max-w-none", proseClassName]
+            .filter(Boolean)
+            .join(" ");
+
+    return (
+        <div className={wrapperClass}>
+            <ReactMarkdown
+                remarkPlugins={[remarkGfm, remarkBreaks]}
+                rehypePlugins={rehypePlugins}
+                components={components}
+            >
+                {md}
+            </ReactMarkdown>
+        </div>
+    );
+}
+
 

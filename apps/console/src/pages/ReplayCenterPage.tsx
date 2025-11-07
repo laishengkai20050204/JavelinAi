@@ -6,6 +6,7 @@ import {
     Clipboard, ClipboardCheck, Binary, MessageSquare, Workflow, Wrench
 } from "lucide-react";
 import { readNdjson } from "../lib/ndjson";
+import { useSharedIds } from "../lib/sharedIds";
 import SafeMarkdown from "../components/SafeMarkdown";
 
 /* ===== 事件类型 ===== */
@@ -68,8 +69,7 @@ export default function ReplayCenterPage() {
     const [highlightOn, setHighlightOn] = useState<boolean>(true);
 
     /* ===== state ===== */
-    const [userId, setUserId] = useState("u1");
-    const [conversationId, setConversationId] = useState("c1");
+    const { userId, setUserId, conversationId, setConversationId } = useSharedIds("u1", "c1");
     const [stepId, setStepId] = useState<string>("");
     const [limit, setLimit] = useState<number>(1000);
 

@@ -329,8 +329,10 @@ public class DatabaseConversationMemoryService implements ConversationMemoryServ
             return null;
         }
         if (value instanceof String str) {
-            return StringUtils.hasText(str) ? str : null;
+            // 直通：哪怕只有换行/空白，也原样保留
+            return str;
         }
+
         if (value instanceof Map<?, ?> map) {
             for (String key : List.of("content", "message", "reasoning", "delta", "text", "value")) {
                 Object candidate = map.get(key);

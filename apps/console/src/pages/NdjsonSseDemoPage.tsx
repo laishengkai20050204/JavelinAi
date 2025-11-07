@@ -1,6 +1,7 @@
+// src/pages/NdjsonSseDemoPage.tsx
 import React from "react";
 import { useSharedIds } from "../lib/sharedIds";
-import SafeMarkdown, { SOFT_NL } from "../components/SafeMarkdown";
+import SafeMarkdown from "../components/SafeMarkdown";
 
 type StepNdjsonBody = { userId: string; conversationId: string; q: string };
 
@@ -28,8 +29,6 @@ export default function NdjsonSseDemoPage() {
     const ssePreRef = React.useRef<HTMLPreElement | null>(null);
     const tokensPreRef = React.useRef<HTMLDivElement | null>(null);
 
-    const emptyRunRef = React.useRef<number>(0);
-
     const isRecord = (v: unknown): v is Record<string, unknown> =>
         v !== null && typeof v === "object" && !Array.isArray(v);
 
@@ -38,12 +37,6 @@ export default function NdjsonSseDemoPage() {
         const choices = (u as Record<string, unknown>).choices;
         if (!Array.isArray(choices) || choices.length === 0) return false;
         return isRecord(choices[0]) && isRecord((choices[0] as Record<string, unknown>).delta);
-    };
-
-    const isEmptyDelta = (u: unknown): boolean => {
-        if (!isSseObject(u)) return false;
-        const delta = u.choices[0]?.delta ?? {};
-        return Object.keys(delta).length === 0;
     };
 
     const extractDeltaContent = (u: unknown): string | null => {
@@ -55,12 +48,11 @@ export default function NdjsonSseDemoPage() {
     const scrollToBottom = (el: HTMLElement | null) => { if (el) el.scrollTop = el.scrollHeight; };
     const logNdjson = (line: string) => { setNdjsonLog((p) => p + line + "\n"); setTimeout(() => scrollToBottom(ndjsonPreRef.current), 0); };
     const logSse = (line: string) => { setSseLog((p) => p + line + "\n"); setTimeout(() => scrollToBottom(ssePreRef.current), 0); };
-    const errorMessage = (e: unknown): string => e instanceof Error ? e.message : (typeof e === "string" ? e : (()=>{ try{return JSON.stringify(e);}catch{return String(e);} })());
+    const errorMessage = (e: unknown): string => e instanceof Error ? e.message : (typeof e === "string" ? e : (() => { try { return JSON.stringify(e); } catch { return String(e); } })());
 
     function startSSE(step: string) {
         if (esRef.current) { esRef.current.close(); esRef.current = null; }
         accumulatedRef.current = "";
-        emptyRunRef.current = 0;
         setTokens("");
 
         const url = `/ai/v2/chat/sse?stepId=${encodeURIComponent(step)}`;
@@ -76,22 +68,14 @@ export default function NdjsonSseDemoPage() {
             try {
                 const obj = JSON.parse(e.data) as unknown;
 
-                // --- 空 delta：每个都插入一个 SOFT_NL 哨兵
-                if (isEmptyDelta(obj)) {
-                    accumulatedRef.current += SOFT_NL;
-                    setTokens(accumulatedRef.current);
-                    setTimeout(() => scrollToBottom(tokensPreRef.current), 0);
-                    logSse(`[message] ${e.data}`);
-                    return;
-                }
-
-                // --- 常规增量
+                // 常规增量：只在存在 content 字段时拼接
                 const chunk = extractDeltaContent(obj);
                 if (typeof chunk === "string") {
                     accumulatedRef.current += chunk;
                     setTokens(accumulatedRef.current);
                     setTimeout(() => scrollToBottom(tokensPreRef.current), 0);
                 }
+
                 logSse(`[message] ${e.data}`);
             } catch {
                 logSse(`[message/raw] ${e.data}`);
@@ -166,6 +150,14 @@ export default function NdjsonSseDemoPage() {
         if (abortRef.current) { abortRef.current.abort(); abortRef.current = null; logNdjson("[NDJSON aborted by user]"); }
     };
 
+    // 可选：组件卸载时清理
+    React.useEffect(() => {
+        return () => {
+            if (esRef.current) esRef.current.close();
+            if (abortRef.current) abortRef.current.abort();
+        };
+    }, []);
+
     return (
         <div className="space-y-6">
             <div className="mb-2 text-base font-semibold">NDJSON → stepId → SSE（Raw / Markdown 切换）</div>
@@ -173,20 +165,32 @@ export default function NdjsonSseDemoPage() {
             <Section title="">
                 <div className="grid gap-4 md:grid-cols-3">
                     <Field label="用户 ID">
-                        <input value={userId} onChange={(e) => setUserId(e.target.value)} placeholder="u1"
-                               className="w-full rounded-xl border border-slate-300 bg-white p-2 text-slate-900 placeholder-slate-400 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"/>
+                        <input
+                            value={userId}
+                            onChange={(e) => setUserId(e.target.value)}
+                            placeholder="u1"
+                            className="w-full rounded-xl border border-slate-300 bg-white p-2 text-slate-900 placeholder-slate-400 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                        />
                     </Field>
                     <Field label="会话 ID">
-                        <input value={conversationId} onChange={(e) => setConversationId(e.target.value)} placeholder="c1"
-                               className="w-full rounded-xl border border-slate-300 bg-white p-2 text-slate-900 placeholder-slate-400 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"/>
+                        <input
+                            value={conversationId}
+                            onChange={(e) => setConversationId(e.target.value)}
+                            placeholder="c1"
+                            className="w-full rounded-xl border border-slate-300 bg-white p-2 text-slate-900 placeholder-slate-400 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                        />
                     </Field>
                     <div className="flex items-end gap-2">
-                        <button onClick={handleRun}
-                                className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-400">
+                        <button
+                            onClick={handleRun}
+                            className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-400"
+                        >
                             发送（NDJSON），并自动订阅 SSE
                         </button>
-                        <button onClick={handleStop}
-                                className="inline-flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:hover:bg-slate-700">
+                        <button
+                            onClick={handleStop}
+                            className="inline-flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:hover:bg-slate-700"
+                        >
                             关闭 SSE
                         </button>
                     </div>
@@ -194,8 +198,12 @@ export default function NdjsonSseDemoPage() {
             </Section>
 
             <Section title="问题">
-        <textarea value={q} onChange={(e) => setQ(e.target.value)} rows={3}
-                  className="w-full rounded-xl border border-slate-300 bg-white p-3 text-slate-900 placeholder-slate-400 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"/>
+        <textarea
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            rows={3}
+            className="w-full rounded-xl border border-slate-300 bg-white p-3 text-slate-900 placeholder-slate-400 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+        />
             </Section>
 
             <div className="flex items-center gap-2 text-sm">
@@ -205,9 +213,13 @@ export default function NdjsonSseDemoPage() {
             <div className="grid gap-4 md:grid-cols-1">
                 <div className="rounded-2xl border bg-white p-3 shadow-sm dark:border-slate-800 dark:bg-slate-900">
                     <div className="mb-1 text-sm font-medium">NDJSON 日志</div>
-                    <pre ref={ndjsonPreRef}
-                         className="rounded-xl bg-slate-50 text-slate-800 border border-slate-200 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-800 p-3 overflow-auto text-sm font-mono whitespace-pre-wrap break-words transition-colors duration-300"
-                         style={{ maxHeight: 280 }}>{ndjsonLog}</pre>
+                    <pre
+                        ref={ndjsonPreRef}
+                        className="rounded-xl bg-slate-50 text-slate-800 border border-slate-200 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-800 p-3 overflow-auto text-sm font-mono whitespace-pre-wrap break-words transition-colors duration-300"
+                        style={{ maxHeight: 280 }}
+                    >
+            {ndjsonLog}
+          </pre>
                 </div>
 
                 <div className="rounded-2xl border bg-white p-3 shadow-sm dark:border-slate-800 dark:bg-slate-900">
@@ -216,9 +228,17 @@ export default function NdjsonSseDemoPage() {
                         <div className="inline-flex items-center gap-1 rounded-xl border border-slate-300 bg-white p-1 text-xs dark:border-slate-700 dark:bg-slate-800">
                             <button onClick={() => setMdView(false)} className={`px-2 py-0.5 rounded-lg ${!mdView ? "bg-slate-200 dark:bg-slate-700" : ""}`}>Raw</button>
                             <button onClick={() => setMdView(true)} className={`px-2 py-0.5 rounded-lg ${mdView ? "bg-slate-200 dark:bg-slate-700" : ""}`}>Markdown</button>
-                            {mdView && (<><span className="mx-1 opacity-40">|</span>
-                                <button onClick={() => setHighlightOn((v) => !v)}
-                                        className={`px-2 py-0.5 rounded-lg ${highlightOn ? "bg-slate-200 dark:bg-slate-700" : ""}`}>高亮</button></>)}
+                            {mdView && (
+                                <>
+                                    <span className="mx-1 opacity-40">|</span>
+                                    <button
+                                        onClick={() => setHighlightOn((v) => !v)}
+                                        className={`px-2 py-0.5 rounded-lg ${highlightOn ? "bg-slate-200 dark:bg-slate-700" : ""}`}
+                                    >
+                                        高亮
+                                    </button>
+                                </>
+                            )}
                         </div>
                     </div>
 
@@ -226,8 +246,7 @@ export default function NdjsonSseDemoPage() {
                         {mdView ? (
                             <SafeMarkdown source={tokens} allowHtml={false} highlight={highlightOn} />
                         ) : (
-                            <pre
-                                className="rounded-xl bg-slate-50 text-slate-800 border border-slate-200 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-800 p-3 overflow-auto text-sm font-mono whitespace-pre-wrap break-words transition-colors duration-300">
+                            <pre className="rounded-xl bg-slate-50 text-slate-800 border border-slate-200 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-800 p-3 overflow-auto text-sm font-mono whitespace-pre-wrap break-words transition-colors duration-300">
                 {tokens}
               </pre>
                         )}
@@ -236,9 +255,13 @@ export default function NdjsonSseDemoPage() {
 
                 <div className="rounded-2xl border bg-white p-3 shadow-sm dark:border-slate-800 dark:bg-slate-900">
                     <div className="mb-1 text-sm font-medium">SSE 其它事件（decision / clientCalls / tools / status / finished / error）</div>
-                    <pre ref={ssePreRef}
-                         className="rounded-xl bg-slate-50 text-slate-800 border border-slate-200 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-800 p-3 overflow-auto text-sm font-mono whitespace-pre-wrap break-words transition-colors duration-300"
-                         style={{ maxHeight: 280 }}>{sseLog}</pre>
+                    <pre
+                        ref={ssePreRef}
+                        className="rounded-xl bg-slate-50 text-slate-800 border border-slate-200 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-800 p-3 overflow-auto text-sm font-mono whitespace-pre-wrap break-words transition-colors duration-300"
+                        style={{ maxHeight: 280 }}
+                    >
+            {sseLog}
+          </pre>
                 </div>
             </div>
         </div>
