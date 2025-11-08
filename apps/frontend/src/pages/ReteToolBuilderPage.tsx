@@ -1,0 +1,568 @@
+﻿// apps/frontend/src/pages/ReteToolBuilderPage.tsx
+import React from "react";
+import { createRoot } from "react-dom/client";
+
+import { NodeEditor } from "rete";
+import { AreaPlugin, AreaExtensions } from "rete-area-plugin";
+import { ConnectionPlugin, Presets as ConnectionPresets } from "rete-connection-plugin";
+import { ReactPlugin, Presets, useRete } from "rete-react-plugin";
+import { ContextMenuPlugin, Presets as ContextMenuPresets } from "rete-context-menu-plugin";
+
+import {
+    Engine as DataEngine,
+    exportGraph,
+    importGraph,
+    type Schemes,
+    type AreaExtra
+} from "../features/toolflow/nodes/basic";
+import { autoRegisterAllNodesAsync } from "../features/toolflow/core/autoNodes";
+import { runFromStart } from "../features/toolflow/core/runner";
+import { cleanupDanglingConnections, type GraphJSON } from "../features/toolflow/core/graph";
+import { getContextMenuItems, getNodeDefsByCategory } from "../features/toolflow/core/nodeRegistry";
+import type { ToolNodeCategory, ToolNodeDefinition } from "../features/toolflow/core/nodeRegistry";
+
+const LSK = "javelin.rete.graph.v1";
+
+// Minimal block palette item for drag preview
+type BlockDef = { name: string; label: string };
+
+// Preview helpers
+const PREVIEW_CACHE = new Map<string, { inputs: string[]; outputs: string[]; controls: string[] }>();
+function extractNamesFromMapOrObj(maybe: any): string[] {
+    if (!maybe) return [];
+    try {
+        if (typeof maybe.keys === "function") return Array.from(maybe.keys());
+    } catch {}
+    if (typeof maybe === "object") return Object.keys(maybe);
+    return [];
+}
+function extractControlKeys(maybeControls: any): string[] {
+    const keys: string[] = [];
+    if (!maybeControls) return keys;
+    try {
+        if (typeof maybeControls.forEach === "function") {
+            maybeControls.forEach((_v: any, k: any) => keys.push(String(k)));
+            return keys;
+        }
+    } catch {}
+    try {
+        if (typeof maybeControls.entries === "function") {
+            for (const [k] of maybeControls.entries()) keys.push(String(k));
+            return keys;
+        }
+    } catch {}
+    if (typeof maybeControls === "object") keys.push(...Object.keys(maybeControls));
+    return keys;
+}
+function getNodePreview(factories: Map<string, () => any>, name: string) {
+    if (PREVIEW_CACHE.has(name)) return PREVIEW_CACHE.get(name)!;
+    const fn = factories.get(name);
+    if (!fn) return { inputs: [], outputs: [], controls: [] };
+    try {
+        const inst: any = fn();
+        const inputs = extractNamesFromMapOrObj(inst?.inputs);
+        const outputs = extractNamesFromMapOrObj(inst?.outputs);
+        const controls = extractControlKeys(inst?.controls);
+        const res = { inputs, outputs, controls };
+        PREVIEW_CACHE.set(name, res);
+        return res;
+    } catch {
+        return { inputs: [], outputs: [], controls: [] };
+    }
+}
+
+function BlockItem({
+                       name,
+                       label,
+                       onDragStart
+                   }: {
+    name: string;
+    label: string;
+    onDragStart: (name: string) => (e: React.DragEvent) => void;
+}) {
+    return (
+        <div
+            draggable
+            onDragStart={onDragStart(name)}
+            className="flex items-center justify-between rounded-md border px-2 py-1 text-xs hover:bg-neutral-50 dark:hover:bg-neutral-700"
+            title={name}
+        >
+            <span className="truncate max-w-[200px]">{label}</span>
+            <span className="text-[10px] text-neutral-500 ml-2">{name}</span>
+        </div>
+    );
+}
+
+async function createEditor(container: HTMLElement) {
+    const editor = new NodeEditor<Schemes>();
+    const area = new AreaPlugin<Schemes, AreaExtra>(container);
+    const render = new ReactPlugin<Schemes, AreaExtra>({ createRoot });
+    render.addPreset(Presets.classic.setup());
+    editor.use(area);
+    area.use(render);
+
+    const connection = new ConnectionPlugin<Schemes, AreaExtra>();
+    connection.addPreset(ConnectionPresets.classic.setup());
+    area.use(connection);
+
+    const engine = new DataEngine();
+    editor.use(engine);
+
+    // restore
+    const raw = localStorage.getItem(LSK);
+    if (raw) {
+        try {
+            const g = JSON.parse(raw) as GraphJSON;
+            await importGraph(g, editor, area);
+        } catch (e) {
+            console.warn("Restore graph failed:", e);
+            AreaExtensions.zoomAt(area, editor.getNodes());
+        }
+    } else {
+        AreaExtensions.zoomAt(area, editor.getNodes());
+    }
+
+    return { destroy: () => area.destroy(), editor, area, engine };
+}
+
+export default function ReteToolBuilderPage() {
+    const [ref, api] = useRete(createEditor);
+    const [result, setResult] = React.useState<string>("");
+    const [panelOpen, setPanelOpen] = React.useState(false);
+    const [menuOpen, setMenuOpen] = React.useState(false);
+    const menuRef = React.useRef<HTMLDivElement | null>(null);
+    const cmRef = React.useRef<ContextMenuPlugin<Schemes> | null>(null);
+
+    const [search, setSearch] = React.useState("");
+    const [factories, setFactories] = React.useState(new Map<string, () => any>());
+    const [categories, setCategories] = React.useState<ToolNodeCategory[]>([]);
+    const [activeTab, setActiveTab] = React.useState<ToolNodeCategory | null>(null);
+    const [catMap, setCatMap] = React.useState<Map<ToolNodeCategory, ToolNodeDefinition[]>>(new Map());
+
+    // install nodes and dynamic context menu once api ready
+    React.useEffect(() => {
+        let mounted = true;
+        (async () => {
+            await autoRegisterAllNodesAsync();
+            const items = getContextMenuItems().map(([t, f]) => [t, () => f() as any]);
+            const byCat = getNodeDefsByCategory();
+            if (!mounted) return;
+            // factories by type
+            const fac = new Map<string, () => any>();
+            for (const defs of byCat.values()) {
+                for (const d of defs) fac.set(d.type, () => d.create());
+            }
+            setFactories(fac);
+            // categories in fixed order if present
+            const ORDER: ToolNodeCategory[] = ["control", "variable", "literal", "logic", "collection", "io", "other"];
+            const present = ORDER.filter((c) => byCat.has(c));
+            setCategories(present);
+            setCatMap(byCat);
+            setActiveTab(present[0] ?? null);
+            if (api && !cmRef.current) {
+                const plugin = new ContextMenuPlugin<Schemes>({
+                    items: ContextMenuPresets.classic.setup(items as any)
+                });
+                api.area.use(plugin);
+                cmRef.current = plugin;
+            }
+        })();
+        return () => {
+            mounted = false;
+        };
+    }, [api]);
+
+    // drag from palette
+    const onBlockDragStart = (name: string) => (e: React.DragEvent) => {
+        e.dataTransfer.setData("application/x-node-type", name);
+        e.dataTransfer.effectAllowed = "copy";
+    };
+    const onCanvasDragOver = (e: React.DragEvent) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "copy";
+    };
+    const onCanvasDrop = async (e: React.DragEvent) => {
+        if (!api) return;
+        const { editor, area } = api;
+        const name = e.dataTransfer.getData("application/x-node-type");
+        const factory = factories.get(name);
+        if (!factory) return;
+        const node = factory();
+        await editor.addNode(node);
+        const container = ref.current as HTMLElement | null;
+        const rect = container?.getBoundingClientRect();
+        const pos = {
+            x: rect ? e.clientX - rect.left : e.clientX,
+            y: rect ? e.clientY - rect.top : e.clientY
+        };
+        await area.translate(node.id, pos);
+    };
+
+    // file ops
+    const save = React.useCallback(() => {
+        if (!api) return;
+        const { editor, area } = api;
+        cleanupDanglingConnections(editor);
+        const g = exportGraph(editor, area);
+        localStorage.setItem(LSK, JSON.stringify(g));
+    }, [api]);
+
+    const load = React.useCallback(async () => {
+        if (!api) return;
+        const { editor, area } = api;
+        const raw = localStorage.getItem(LSK);
+        if (!raw) return;
+        const g = JSON.parse(raw) as GraphJSON;
+        await importGraph(g, editor, area);
+    }, [api]);
+
+    const exportJson = React.useCallback(async () => {
+        if (!api) return;
+        const { editor, area } = api;
+        const g = exportGraph(editor as any, area as any);
+        try {
+            await navigator.clipboard.writeText(JSON.stringify(g, null, 2));
+            alert("已复制到剪贴板");
+        } catch {
+            const blob = new Blob([JSON.stringify(g, null, 2)], { type: "application/json" });
+            const url = URL.createObjectURL(blob);
+            window.open(url, "_blank");
+        }
+    }, [api]);
+
+    const importFromClipboard = React.useCallback(async () => {
+        if (!api) return;
+        const { editor, area } = api;
+        try {
+            const text = await navigator.clipboard.readText();
+            const g = JSON.parse(text);
+            await importGraph(g, editor as any, area as any);
+        } catch (e: any) {
+            alert("导入失败：" + (e?.message || String(e)));
+        }
+    }, [api]);
+
+    const resetCanvas = React.useCallback(async () => {
+        if (!api) return;
+        const { editor, area } = api;
+        for (const c of [...editor.getConnections()]) {
+            try {
+                await (editor as any).removeConnection?.(c);
+            } catch {
+                try {
+                    await (editor as any).removeConnection?.((c as any).id);
+                } catch {}
+            }
+        }
+        for (const n of [...editor.getNodes()]) {
+            let ok = false;
+            try {
+                await (editor as any).removeNode?.(n.id as any);
+                ok = true;
+            } catch {}
+            if (!ok) {
+                try {
+                    await (editor as any).removeNode?.(n as any);
+                } catch {}
+            }
+        }
+        try {
+            (area as any)?.area?.update?.();
+        } catch {}
+        try {
+            (area as any)?.update?.();
+        } catch {}
+        try {
+            AreaExtensions.zoomAt(area, editor.getNodes());
+        } catch {}
+    }, [api]);
+
+    const diagnose = React.useCallback(() => {
+        if (!api) return;
+        const { editor } = api;
+        const nodes = editor.getNodes().map((n) => ({
+            id: n.id,
+            label: (n as any).label,
+            inputs: [...(((n as any).inputs?.keys?.() as any) ?? [])],
+            outputs: [...(((n as any).outputs?.keys?.() as any) ?? [])]
+        }));
+        const cons = editor.getConnections().map((c) => ({
+            from: { id: c.source, port: c.sourceOutput },
+            to: { id: c.target, port: c.targetInput }
+        }));
+        console.log("[DIAG]", { nodes, cons });
+        alert(`DIAG\nnodes=${nodes.length}\nconns=${cons.length}`);
+    }, [api]);
+
+    const runFlow = React.useCallback(async () => {
+        if (!api) return;
+        const { editor, engine } = api;
+        try {
+            await (engine as any)?.reset?.();
+            const r = await runFromStart(editor, engine);
+            setResult(JSON.stringify(r, null, 2));
+        } catch (e: any) {
+            setResult("ERROR: " + (e?.message || String(e)));
+        }
+    }, [api]);
+
+    // palette grouped items
+    const paletteGrouped = React.useMemo(() => {
+        const q = search.trim().toLowerCase();
+        const result: Record<string, BlockDef[]> = {};
+        for (const c of categories) {
+            const defs = catMap.get(c) ?? [];
+            const arr: BlockDef[] = defs
+                .map((d) => ({ name: d.type, label: d.title }))
+                .filter((b) => b.name.toLowerCase().includes(q) || b.label.toLowerCase().includes(q));
+            if (arr.length) result[c] = arr;
+        }
+        return result;
+    }, [categories, catMap, search]);
+
+    // close menu on outside click
+    React.useEffect(() => {
+        const onDoc = (e: MouseEvent) => {
+            if (!menuRef.current) return;
+            if (!menuRef.current.contains(e.target as any)) setMenuOpen(false);
+        };
+        document.addEventListener("click", onDoc);
+        return () => document.removeEventListener("click", onDoc);
+    }, []);
+
+    return (
+        <div className="w-full h-[calc(100vh-120px)] min-h-[600px] relative bg-neutral-50 dark:bg-neutral-900">
+            {/* Canvas */}
+            <div ref={ref} className="absolute inset-0" onDragOver={onCanvasDragOver} onDrop={onCanvasDrop} />
+
+            {/* Left palette (grouped) */}
+            <div className="pointer-events-auto absolute left-4 top-4 z-20 w-[340px] max-h-[84vh] overflow-hidden rounded-2xl border bg-white/95 shadow-md backdrop-blur dark:border-neutral-700 dark:bg-neutral-800/90">
+                {/* Tabs */}
+                <div className="flex items-center gap-1 overflow-auto border-b px-2 py-1 text-xs dark:border-neutral-700">
+                    {categories.map((c) => (
+                        <button
+                            key={c}
+                            onClick={() => setActiveTab(c)}
+                            className={`whitespace-nowrap rounded-md px-2 py-1 ${
+                                activeTab === c ? "bg-neutral-900 text-white dark:bg-neutral-100 dark:text-black" : "hover:bg-neutral-100 dark:hover:bg-neutral-700"
+                            }`}
+                        >
+                            {c}
+                        </button>
+                    ))}
+                </div>
+                {/* Search */}
+                <div className="flex items-center gap-2 px-2 py-2 text-xs">
+                    <input
+                        placeholder="搜索节点..."
+                        value={search}
+                        onChange={(e) => setSearch(e.target.value)}
+                        className="w-full rounded-md border px-2 py-1 text-xs dark:bg-neutral-800"
+                    />
+                </div>
+                {/* Blocks */}
+                <div className="max-h-[66vh] overflow-auto p-2 space-y-2">
+                    {activeTab &&
+                        (paletteGrouped[activeTab] ?? []).map((def) => {
+                            const p = getNodePreview(factories, def.name);
+                            return (
+                                <div
+                                    key={def.name}
+                                    draggable
+                                    onDragStart={onBlockDragStart(def.name)}
+                                    className="rounded-lg border p-2 text-xs hover:bg-neutral-50 dark:hover:bg-neutral-700"
+                                >
+                                    <div className="flex items-center justify-between">
+                                        <div className="font-medium">{def.label}</div>
+                                        <div className="text-[10px] text-neutral-500">{def.name}</div>
+                                    </div>
+                                    {(p.inputs.length > 0 || p.outputs.length > 0) && (
+                                        <div className="mt-1 grid grid-cols-2 gap-2">
+                                            <div>
+                                                <div className="text-[10px] text-neutral-500 mb-1">inputs</div>
+                                                <div className="flex flex-wrap gap-1">
+                                                    {p.inputs.map((n) => (
+                                                        <span key={n} className="rounded border px-1 py-0.5">
+                              {n}
+                            </span>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                            <div>
+                                                <div className="text-[10px] text-neutral-500 mb-1">outputs</div>
+                                                <div className="flex flex-wrap gap-1">
+                                                    {p.outputs.map((n) => (
+                                                        <span key={n} className="rounded border px-1 py-0.5">
+                              {n}
+                            </span>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    )}
+                                    {p.controls.length > 0 && (
+                                        <div className="mt-1">
+                                            <div className="text-[10px] text-neutral-500 mb-1">controls</div>
+                                            <div className="flex flex-wrap gap-1">
+                                                {p.controls.map((n) => (
+                                                    <span key={n} className="rounded border px-1 py-0.5">
+                            {n}
+                          </span>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+                            );
+                        })}
+                </div>
+            </div>
+
+            {/* Top menu */}
+            <div className="pointer-events-auto absolute left-[344px] top-4 z-20 flex items-center gap-2 rounded-2xl bg-white/90 p-2 text-sm shadow-md backdrop-blur dark:bg-neutral-800/80">
+                <div className="relative" ref={menuRef}>
+                    <button
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            setMenuOpen((v) => !v);
+                        }}
+                        className="rounded-lg border px-3 py-1 hover:bg-neutral-50 dark:hover:bg-neutral-700"
+                    >
+                        菜单
+                    </button>
+                    {menuOpen && (
+                        <div className="absolute left-0 mt-2 w-[300px] rounded-xl border bg-white shadow-lg dark:border-neutral-700 dark:bg-neutral-800">
+                            {/* 文件 */}
+                            <div className="px-3 py-2 text-[11px] font-medium text-neutral-500 dark:text-neutral-400">文件</div>
+                            <div className="flex flex-col px-2 pb-2">
+                                <button
+                                    onClick={() => {
+                                        setMenuOpen(false);
+                                        save();
+                                    }}
+                                    className="rounded-md px-3 py-1.5 text-left hover:bg-neutral-50 dark:hover:bg-neutral-700"
+                                >
+                                    保存 (Ctrl+S)
+                                </button>
+                                <button
+                                    onClick={() => {
+                                        setMenuOpen(false);
+                                        load();
+                                    }}
+                                    className="rounded-md px-3 py-1.5 text-left hover:bg-neutral-50 dark:hover:bg-neutral-700"
+                                >
+                                    加载 (Ctrl+O)
+                                </button>
+                                <button
+                                    onClick={() => {
+                                        setMenuOpen(false);
+                                        exportJson();
+                                    }}
+                                    className="rounded-md px-3 py-1.5 text-left hover:bg-neutral-50 dark:hover:bg-neutral-700"
+                                >
+                                    导出为 JSON（复制）
+                                </button>
+                                <button
+                                    onClick={() => {
+                                        setMenuOpen(false);
+                                        importFromClipboard();
+                                    }}
+                                    className="rounded-md px-3 py-1.5 text-left hover:bg-neutral-50 dark:hover:bg-neutral-700"
+                                >
+                                    从剪贴板导入 JSON
+                                </button>
+                                <button
+                                    onClick={() => {
+                                        setMenuOpen(false);
+                                        resetCanvas();
+                                    }}
+                                    className="rounded-md px-3 py-1.5 text-left hover:bg-neutral-50 dark:hover:bg-neutral-700"
+                                >
+                                    清空画布
+                                </button>
+                            </div>
+
+                            {/* 运行 */}
+                            <div className="px-3 py-2 text-[11px] font-medium text-neutral-500 dark:text-neutral-400">运行</div>
+                            <div className="flex flex-col px-2 pb-2">
+                                <button
+                                    onClick={() => {
+                                        setMenuOpen(false);
+                                        runFlow();
+                                    }}
+                                    className="rounded-md px-3 py-1.5 text-left hover:bg-neutral-50 dark:hover:bg-neutral-700"
+                                >
+                                    执行流程 (Ctrl+Shift+Enter)
+                                </button>
+                                <button
+                                    onClick={() => {
+                                        setMenuOpen(false);
+                                        diagnose();
+                                    }}
+                                    className="rounded-md px-3 py-1.5 text-left hover:bg-neutral-50 dark:hover:bg-neutral-700"
+                                >
+                                    诊断（打印节点与连线）
+                                </button>
+                            </div>
+
+                            {/* 视图 */}
+                            <div className="px-3 py-2 text-[11px] font-medium text-neutral-500 dark:text-neutral-400">视图</div>
+                            <div className="flex flex-col px-2 pb-3">
+                                <button
+                                    onClick={() => {
+                                        setMenuOpen(false);
+                                        setPanelOpen((v) => !v);
+                                    }}
+                                    className="rounded-md px-3 py-1.5 text-left hover:bg-neutral-50 dark:hover:bg-neutral-700"
+                                >
+                                    {panelOpen ? "隐藏结果 (Ctrl+`)" : "打开结果 (Ctrl+`)"}
+                                </button>
+                                <button
+                                    onClick={() => {
+                                        setMenuOpen(false);
+                                        setResult("");
+                                    }}
+                                    className="rounded-md px-3 py-1.5 text-left hover:bg-neutral-50 dark:hover:bg-neutral-700"
+                                >
+                                    清空结果
+                                </button>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            </div>
+
+            {/* Result panel */}
+            <div
+                className={`pointer-events-auto absolute right-4 top-4 z-10 max-h-[60vh] overflow-hidden rounded-2xl shadow-md backdrop-blur transition-all duration-200 ${
+                    panelOpen ? "w-[520px] bg-white/90 dark:bg-neutral-800/80" : "w-[44px] bg-white/70 dark:bg-neutral-800/60"
+                }`}
+                style={{ resize: panelOpen ? ("horizontal" as const) : "none" }}
+            >
+                <div className="flex items-center justify-between gap-2 border-b border-neutral-200/60 dark:border-neutral-700/60 px-2 py-1">
+                    <div className="flex items-center gap-2">
+                        <button
+                            onClick={() => setPanelOpen((v) => !v)}
+                            title={panelOpen ? "Hide result" : "Show result"}
+                            className="inline-flex h-6 w-6 items-center justify-center rounded-md hover:bg-neutral-100 dark:hover:bg-neutral-700"
+                        >
+                            {panelOpen ? "<" : ">"}
+                        </button>
+                        {panelOpen && <span className="text-xs text-neutral-500">Results</span>}
+                    </div>
+                    {panelOpen && (
+                        <div className="flex items-center gap-2">
+                            <button
+                                onClick={() => setResult("")}
+                                className="rounded-md border px-2 py-0.5 text-xs hover:bg-neutral-50 dark:hover:bg-neutral-700"
+                            >
+                                清空
+                            </button>
+                        </div>
+                    )}
+                </div>
+                {panelOpen && <pre className="max-h-[52vh] w-full overflow-auto p-3 text-xs">{result || "(暂无结果)"}</pre>}
+            </div>
+        </div>
+    );
+}
