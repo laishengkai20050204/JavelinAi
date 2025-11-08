@@ -7,6 +7,8 @@ import { AreaPlugin, AreaExtensions } from "rete-area-plugin";
 import { ConnectionPlugin, Presets as ConnectionPresets } from "rete-connection-plugin";
 import { ReactPlugin, Presets, useRete } from "rete-react-plugin";
 import { ContextMenuPlugin, Presets as ContextMenuPresets } from "rete-context-menu-plugin";
+import { buildAndSaveToolBundle } from "../features/clientTools/compile";
+import { saveToolBundle } from "../features/clientTools/storage";
 
 import {
   Engine as DataEngine,
@@ -83,6 +85,7 @@ function BlockItem({ name, label, onDragStart }: { name: string; label: string; 
     </div>
   );
 }
+
 
 async function createEditor(container: HTMLElement) {
   const editor = new NodeEditor<Schemes>();
@@ -200,7 +203,24 @@ export default function ReteToolBuilderPage() {
     await area.translate(node.id, pos);
   };
 
-  // file ops
+    const saveAsClientTool = React.useCallback(async () => {
+        if (!api) { alert("Editor 尚未就绪"); return; }
+
+        const name = prompt("工具唯一名 (slug)：", "open_url_like")?.trim();
+        if (!name) return; // 取消或空字符串直接返回（解决 TS2322）
+
+        const description = prompt("一句话描述：", "用画的流程在前端执行")?.trim() || "client tool";
+
+        const { editor, area } = api;
+        const graph = exportGraph(editor as any, area as any); // 与你其它位置保持一致
+
+        const bundle = await buildAndSaveToolBundle(graph, { name, description, version: "1.0.0" });
+        saveToolBundle(bundle);
+        alert(`已保存前端工具：${bundle.meta.name}`);
+    }, [api]);
+
+
+    // file ops
     const save = React.useCallback(() => {
         if (!api) return;
         const { editor, area } = api;
@@ -470,6 +490,7 @@ export default function ReteToolBuilderPage() {
                 <button onClick={() => { setMenuOpen(false); exportJson(); }} className="rounded-md px-3 py-1.5 text-left hover:bg-neutral-50 dark:hover:bg-neutral-700">Export JSON (copy)</button>
                 <button onClick={() => { setMenuOpen(false); importFromClipboard(); }} className="rounded-md px-3 py-1.5 text-left hover:bg-neutral-50 dark:hover:bg-neutral-700">Import from clipboard</button>
                 <button onClick={() => { setMenuOpen(false); resetCanvas(); }} className="rounded-md px-3 py-1.5 text-left hover:bg-neutral-50 dark:hover:bg-neutral-700">Clear canvas</button>
+                  <button onClick={() => { setMenuOpen(false); saveAsClientTool(); }} className="rounded-md px-3 py-1.5 text-left hover:bg-neutral-50 dark:hover:bg-neutral-700">Save as Client Tool</button>
               </div>
               <div className="px-3 py-2 text-[11px] font-medium text-neutral-500 dark:text-neutral-400">Run</div>
               <div className="flex flex-col px-2 pb-2">

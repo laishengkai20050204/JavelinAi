@@ -1,6 +1,9 @@
 // src/pages/JavelinMinimalChat.tsx
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import { listSavedTools } from "../features/clientTools/storage";
+import { compileGraphToClientTool } from "../features/clientTools/compile";
+import type { ClientTool } from "../features/clientTools/types";
 import SafeMarkdown from "../components/SafeMarkdown";
 import {
     Bot,
@@ -57,6 +60,8 @@ export interface StepEventLine {
     data?: Record<string, unknown>;
     [k: string]: unknown;
 }
+
+
 
 // === NDJSON reader ==========================================================
 async function* ndjsonIterator(res: Response) {
@@ -315,6 +320,39 @@ export default function JavelinMinimalChat() {
     // Derived
     const messages = useMemo(() => convMessages[activeId] ?? [], [convMessages, activeId]);
 
+    // 内置一个简易 debug_tool，方便后端测试 clientCalls
+    const debugClientTool: ClientTool = {
+        manifest: {
+            name: "client_debug_tool",
+            description: "前端打印并回传参数的调试工具",
+            "x-execTarget": "client",
+            parameters: { type: "object", properties: { note: { type: "string", default: "" } }, required: [] }
+        },
+        async execute(args, ctx) {
+            console.log("[client] debug_tool execute:", { args, ctx });
+            return { result: { ok: true, echo: args, ctx } };
+        }
+    };
+
+    const [clientTools, setClientTools] = useState<ClientTool[]>([]);
+    const processedCallIdsRef = useRef<Set<string>>(new Set());
+
+    useEffect(() => {
+        (async () => {
+            const saved = listSavedTools();
+            const compiled: ClientTool[] = [];
+            for (const b of saved) {
+                compiled.push(
+                    await compileGraphToClientTool(b.graph, {
+                        name: b.meta.name,
+                        description: b.meta.description
+                    })
+                );
+            }
+            setClientTools([debugClientTool, ...compiled]);
+        })();
+    }, []);
+
     // Auto-scroll
     useEffect(() => {
         listRef.current?.scrollTo({
@@ -402,6 +440,17 @@ export default function JavelinMinimalChat() {
         setMsgs((prev) => prev.map((m) => (m.id === "draft" ? { ...m, id: newId() } : m)));
     };
 
+    function scheduleClientCall(stepId: string, call: any) {
+        const name = call?.name;
+        const callId = call?.id || call?.callId || (crypto as any)?.randomUUID?.() || String(Date.now());
+        if (!name) return;
+        if (processedCallIdsRef.current.has(callId)) return;
+        processedCallIdsRef.current.add(callId);
+
+        const args = call?.arguments ?? call?.args ?? {};
+        void executeClientTool(stepId, name, callId, args);
+    }
+
     function createConversation() {
         abortRef.current?.abort();
         if (esRef.current) {
@@ -418,6 +467,7 @@ export default function JavelinMinimalChat() {
         setActiveId(id);
         setEvents([]);
         setInput("");
+        processedCallIdsRef.current.clear();
     }
 
     function requestRename(id: string) {
@@ -470,6 +520,39 @@ export default function JavelinMinimalChat() {
         accumulatedRef.current = "";
     }
 
+    function handleStepNdjsonLine(line: StepEventLine) {
+        setEvents((prev) => [...prev, line]);
+
+        // 取 stepId（顶层或 data 内）
+        const sidTop = (isRecord(line) && typeof line["stepId"] === "string") ? String(line["stepId"]) : null;
+        const sidData = (isRecord(line?.data) && typeof (line.data as any)["stepId"] === "string") ? String((line.data as any)["stepId"]) : null;
+        const sid = sidTop || sidData || null;
+
+        // 打开 SSE（只开一次）
+        if (!USE_DEMO && sid && currentSseStepIdRef.current !== sid) {
+            currentSseStepIdRef.current = sid;
+            startSSE(sid);
+        }
+
+        // 顶层 clientCalls：{ type:"clientCalls", calls:[...] }
+        if (isRecord(line) && line["type"] === "clientCalls" && Array.isArray((line as any).calls)) {
+            const calls = (line as any).calls as Array<any>;
+            for (const c of calls) scheduleClientCall(sid || "", c);
+        }
+        // data 内的 clientCalls
+        if (isRecord(line?.data) && (line.data as any)["type"] === "clientCalls" && Array.isArray((line.data as any)["calls"])) {
+            const calls = (line.data as any)["calls"] as Array<any>;
+            for (const c of calls) scheduleClientCall(sid || "", c);
+        }
+
+        // 终态收尾
+        if (isRecord(line?.data) && (line.event === "final" || line.event === "completed" ||
+            ["final", "assistant_final", "done"].includes(String(line.data["type"] ?? "")))) {
+            finalizeDraft();
+        }
+    }
+
+
     // Send（NDJSON 只拿 stepId；真正拼字走 SSE）
     async function handleSend(text?: string) {
         if (sendingRef.current) return;
@@ -502,27 +585,7 @@ export default function JavelinMinimalChat() {
             const iterable = USE_DEMO ? demoNdjson(content) : fetchNdjson(content, activeId, controller.signal);
             for await (const line of iterable as AsyncIterable<StepEventLine>) {
                 if (streamRef.current !== streamId) break;
-                setEvents((prev) => [...prev, line]);
-
-                if (!USE_DEMO) {
-                    // —— 只在 NDJSON 里读取 stepId 并订阅 SSE
-                    const sid =
-                        isRecord(line?.data) && typeof line.data?.["stepId"] === "string"
-                            ? String(line.data["stepId"])
-                            : null;
-
-                    if (sid && currentSseStepIdRef.current !== sid) {
-                        currentSseStepIdRef.current = sid;
-                        startSSE(sid); // 仅 SSE 负责累积与覆盖写入
-                    }
-                } else {
-                    // DEMO 模式不从 NDJSON 拼字（保持语义与真实一致）
-                }
-
-                // 可保留“终态”事件的收尾
-                if (isRecord(line?.data) && (line.event === "final" || line.event === "completed" || ["final", "assistant_final", "done"].includes(String(line.data["type"] ?? "")))) {
-                    finalizeDraft();
-                }
+                handleStepNdjsonLine(line);
             }
         } catch (err: unknown) {
             const msg = err instanceof Error ? err.message : String(err);
@@ -548,8 +611,118 @@ export default function JavelinMinimalChat() {
     }
 
     function buildRequest(userText: string, conversationId: string) {
-        return { userId: userId.trim() || "u1", conversationId, q: userText }; // NEW: 使用输入的 userId
+        return {
+            userId: userId.trim() || "u1",
+            conversationId,
+            q: userText,
+            toolChoice: "auto",
+            responseMode: "step-json-ndjson",
+            clientTools: clientTools.map(t => ({
+                type: "function",
+                function: t.manifest // { name, description, parameters, "x-execTarget":"client" }
+            }))
+        };
     }
+
+    const safeParseJson = (s?: string) => { try { return s ? JSON.parse(s) : {}; } catch { return {}; } };
+
+    function manifestList() {
+        return clientTools.map(t => ({ type: "function", function: t.manifest }));
+    }
+
+    function toClientDataPayload(out: any) {
+        // 尽量兼容：string→text；已有 payload 原样；否则当 json
+        if (out && typeof out === "object" && out.payload) return { payload: out.payload };
+        if (typeof out === "string") return { payload: { type: "text", value: out } };
+        if (out && typeof out === "object" && out.result !== undefined) {
+            return { payload: { type: "json", value: out.result } };
+        }
+        return { payload: { type: "json", value: out } };
+    }
+
+    async function continueViaNdjson(stepId: string, clientResult: any) {
+        const body = {
+            userId: userId.trim() || "u1",
+            conversationId: activeId,
+            resumeStepId: stepId,
+            toolChoice: "auto",
+            responseMode: "step-json-ndjson",
+            clientTools: manifestList(),
+            clientResults: [clientResult]
+        };
+
+        const res = await fetch(joinUrl(BASE_URL, NDJSON_PATH), {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "Accept": "application/x-ndjson" },
+            body: JSON.stringify(body)
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+        for await (const line of ndjsonIterator(res)) {
+            handleStepNdjsonLine(line);
+        }
+    }
+
+
+    async function executeClientTool(stepId: string, name: string, callId: string, rawArgs: any) {
+        const tool = clientTools.find(t => t.manifest.name === name);
+        if (!tool) {
+            const clientResult = {
+                callId, name,
+                    status: "ERROR",
+                    reused: false,
+                    arguments: rawArgs || {},
+                data: { payload: { type: "text", value: `client tool not found: ${name}` } }
+            };
+            await continueViaNdjson(stepId, clientResult);
+            return;
+        }
+        try {
+            const out = await tool.execute(rawArgs ?? {}, { userId, conversationId: activeId });
+            const clientResult = {
+                callId, name,
+                    status: "SUCCESS",
+                    reused: false,
+                    arguments: rawArgs || {},
+                data: toClientDataPayload(out)
+            };
+            await continueViaNdjson(stepId, clientResult);
+        } catch (e: any) {
+            const clientResult = {
+                callId, name,
+                status: "ERROR",
+                reused: false,
+                arguments: rawArgs || {},
+                data: { payload: { type: "text", value: String(e?.message || e) } }
+            };
+            await continueViaNdjson(stepId, clientResult);
+        }
+    }
+
+    /** 解析两种可能的前端工具调用信号，并执行 */
+    function handleToolMessage(stepId: string, obj: any): boolean {
+        // A) OpenAI 风格
+        if (obj?.type === "tool_call" && (obj?.xExecTarget === "client" || obj?.["x-execTarget"] === "client")) {
+            const callId = obj.tool_call_id || (crypto as any)?.randomUUID?.() || String(Date.now());
+            const args = typeof obj.arguments === "string" ? safeParseJson(obj.arguments) : (obj.arguments || {});
+            void executeClientTool(stepId, obj.name, callId, args);
+            return true;
+        }
+        // B) 自定义：client_tool_call
+        if (obj?.type === "client_tool_call") {
+            const callId = obj.callId || (crypto as any)?.randomUUID?.() || String(Date.now());
+            void executeClientTool(stepId, obj.name, callId, obj.args || {});
+            return true;
+        }
+        // ✅ C) “裸 call 对象”（SSE/NDJSON 的 calls[] 里常见：{id,name,arguments,...}）
+        if (obj && obj.name && (obj.arguments !== undefined || obj.args !== undefined)) {
+            scheduleClientCall(stepId, obj);
+            return true;
+        }
+        return false;
+    }
+
+
 
     function handleKey(e: React.KeyboardEvent<HTMLTextAreaElement>) {
         // @ts-expect-error IME composing flag
@@ -573,6 +746,7 @@ export default function JavelinMinimalChat() {
         }
         currentSseStepIdRef.current = null;
         accumulatedRef.current = "";
+        processedCallIdsRef.current.clear();
         setBusy(false);
     }
 
@@ -590,6 +764,7 @@ export default function JavelinMinimalChat() {
 
             // 关键：SSE 开始时，重置累计串，并清空草稿（覆盖式）
             accumulatedRef.current = "";
+            processedCallIdsRef.current.clear();
             replaceDraftContent("");
 
             setEvents((prev) => [...prev, { event: "sse-open", ts: Date.now(), data: { url } }]);
@@ -603,6 +778,19 @@ export default function JavelinMinimalChat() {
                 }
                 try {
                     const obj = JSON.parse(e.data) as unknown;
+
+                    // 先处理 clientCalls 包：{ type:"clientCalls", calls:[...] }
+                    if (isRecord(obj) && obj["type"] === "clientCalls" && Array.isArray((obj as any).calls)) {
+                        for (const c of (obj as any).calls) scheduleClientCall(stepId, c);
+                        setEvents(prev => [...prev, { event: "sse-clientCalls", ts: Date.now(), data: obj as any }]);
+                        return;
+                    }
+
+                    // ✅ 先看看是不是“前端工具调用”信号；如果是，直接执行并回填
+                    if (handleToolMessage(stepId, obj)) {
+                        setEvents((prev) => [...prev, { event: "sse-client-tool", ts: Date.now(), data: obj as any }]);
+                        return;
+                    }
 
                     // 空 delta：直接忽略（常见 keep-alive / 空结构化片段）
                     if (sseIsEmptyDelta(obj)) {
@@ -640,6 +828,13 @@ export default function JavelinMinimalChat() {
 
             (["decision", "clientCalls", "tools", "status", "finished", "error"] as const).forEach((name) => {
                 es.addEventListener(name, (ev: MessageEvent) => {
+                    if (name === "clientCalls") {
+                        try {
+                            const payload = JSON.parse(ev.data);
+                            const list = Array.isArray(payload?.calls) ? payload.calls : (Array.isArray(payload) ? payload : [payload]);
+                            for (const c of list) scheduleClientCall(stepId, c);
+                        } catch {}
+                    }
                     setEvents((prev) => [
                         ...prev,
                         { event: `sse-${name}`, ts: Date.now(), data: { raw: ev.data } },

@@ -58,8 +58,19 @@ public class DecisionServiceSpringAi implements DecisionService {
         payload.put("_flattened", true);
         payload.put("_tamperSeal", m2Digest);
         // 工具选择：保持你现有逻辑
-        if (st != null && st.req() != null && StringUtils.hasText(st.req().toolChoice())) {
-            payload.put("toolChoice", st.req().toolChoice());
+        if (st != null && st.req() != null) {
+            if (st.req().clientTools() != null && !st.req().clientTools().isEmpty()) {
+                // 网关会从 "clientTools" 和 "tools" 两个键读取；都放上更稳妥
+                payload.put("clientTools", st.req().clientTools());
+                payload.putIfAbsent("tools", st.req().clientTools());
+            }
+            if (st.req().tool_calls() != null && !st.req().tool_calls().isEmpty()) {
+                payload.put("tool_calls", st.req().tool_calls());
+            }
+            if (org.springframework.util.StringUtils.hasText(st.req().toolChoice())) {
+                // 你的网关用的是 "toolChoice"（驼峰），如果后面有需要也可同时放一个 "tool_choice"
+                payload.put("toolChoice", st.req().toolChoice());
+            }
         }
 
         // ==== A) 开关打开：用“流式决策” ====

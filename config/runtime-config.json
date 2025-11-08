@@ -2,7 +2,14 @@
   "compatibility" : "OPENAI",
   "model" : "deepseek-chat",
   "toolsMaxLoops" : 10,
-  "toolToggles" : { },
+  "toolToggles" : {
+    "find_relevant_memory" : false,
+    "web_search" : false,
+    "web_fetch" : false,
+    "get_server_time" : false,
+    "python_exec" : false,
+    "debug_tool" : false
+  },
   "baseUrl" : "https://api.deepseek.com",
   "apiKey" : "sk-f7b984ec955240a2a81f341792191927",
   "clientTimeoutMs" : 180000,

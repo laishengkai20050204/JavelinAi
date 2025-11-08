@@ -7,6 +7,7 @@ import com.example.service.impl.StepContextStore;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.swagger.v3.oas.annotations.Operation;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.util.StringUtils;
@@ -17,6 +18,7 @@ import reactor.core.publisher.Flux;
 import java.util.*;
 import java.util.stream.Collectors;
 
+@Slf4j
 @RestController
 @RequestMapping("/ai")
 @RequiredArgsConstructor
@@ -83,6 +85,8 @@ public class OrchestratedChatController {
                 );
             }
         }
+
+        log.debug("tools : {}", req.clientTools());
 
         // === 通过校验，进入编排 ===
         return service.run(req).map(this::toNdjsonLine);
