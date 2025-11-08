@@ -519,3 +519,4 @@ export async function createMinimalEditor(container: HTMLElement) {
     AreaExtensions.zoomAt(area, editor.getNodes());
     return { editor, area, engine };
 }
+

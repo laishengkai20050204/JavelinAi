@@ -1,5 +1,19 @@
 // apps/frontend/src/features/toolflow/core/nodeRegistry.ts
-import type { ClassicPreset } from "rete";
+import type {ClassicPreset} from "rete";
+
+// 运行时上下文 & API（用 any 避免循环依赖）
+export type RunContext = { vars: Record<string, any>; logs: any[] };
+export type RunAPI = {
+    editor: any; engine: any; ctx: RunContext;
+    readInput: (id: any, port: string) => Promise<any[]>;
+    readControl: (node: any, name: string) => any;
+    nextBy: (id: any, port: string) => any;
+    invalidate: () => Promise<void>;
+    setCache: (id: any, v: any) => void;
+    getCache: (id: any) => any;
+};
+export type NodeRuntime = (api: RunAPI, node: any) => Promise<{ next?: any } | void>;
+
 
 export type ToolNodeCategory =
     | "control"    // Start / End / If / While / Delay ...
@@ -17,9 +31,15 @@ export interface ToolNodeDefinition {
     title: string;
     /** 用于 Palette/菜单分组 */
     category: ToolNodeCategory;
+    /** 运行时上下文 */
+    runtime?: NodeRuntime;
+
     /** 实际创建 Rete 节点实例 */
     create(): ClassicPreset.Node;
+
 }
+
+const runtimeRegistry = new Map<string, NodeRuntime>();
 
 /** 内部注册表 */
 const registry = new Map<string, ToolNodeDefinition>();
@@ -29,6 +49,7 @@ export function registerNode(def: ToolNodeDefinition) {
     if (registry.has(def.type)) {
         console.warn("[toolflow] duplicate node type:", def.type);
     }
+    if (def.runtime) runtimeRegistry.set(def.type, def.runtime);
     registry.set(def.type, def);
 }
 
@@ -59,4 +80,8 @@ export function getNodeDefsByCategory(): Map<ToolNodeCategory, ToolNodeDefinitio
 export function resolveNodeFactory(type: string): (() => ClassicPreset.Node) | undefined {
     const def = registry.get(type);
     return def?.create;
+}
+
+export function getRuntime(type: string) {
+    return runtimeRegistry.get(type);
 }

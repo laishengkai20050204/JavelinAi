@@ -1,6 +1,7 @@
 // apps/frontend/src/features/toolflow/core/runner.ts
 import type { NodeEditor } from "rete";
 import type { Schemes } from "../nodes/basic";
+import { getRuntime } from "../core/nodeRegistry";
 import {
     Engine,
     controlSocket,
@@ -69,6 +70,7 @@ export async function runFromStart(editor: NodeEditor<Schemes>, engine: Engine) 
     try {
         let cur: any = nextBy(editor, start.id, "next");
         let guard = 0;
+        const invalidate = async () => { await (engine as any)?.reset?.(); };
         const loopStack: any[] = [];
         const advanceOrLoop = () => {
             if (cur !== undefined) { return true; }
@@ -84,6 +86,26 @@ export async function runFromStart(editor: NodeEditor<Schemes>, engine: Engine) 
             guard++; if (guard > 5000) throw new Error("执行步数过多，可能出现死循环");
             const node = ids.get(cur);
 
+            const typeOrLabel = String((node as any)?.type ?? (node as any)?.label);
+            const rt = getRuntime(typeOrLabel);
+            if (rt) {
+                const api = {
+                    editor, engine,
+                    ctx,
+                    readInput: (id: any, port: string) => readInput(editor, engine, id, port),
+                    readControl: (n: any, name: string) => readControl(n, name),
+                    nextBy: (id: any, port: string) => nextBy(editor, id, port),
+                    invalidate,
+                    setCache: (id: any, v: any) => OutputCache.set(id, v),
+                    getCache: (id: any) => OutputCache.get(id),
+                };
+                const res: any = await rt(api as any, node);
+                cur = res?.next ?? nextBy(editor, node.id, "next");
+                if (!advanceOrLoop()) break;
+                continue; // 命中 runtime 的新节点直接返回，不再进入旧分支
+            }
+
+
             // If
             if (node instanceof IfNode) {
                 const d: any = await engine.fetch(node.id as any);
@@ -96,6 +118,7 @@ export async function runFromStart(editor: NodeEditor<Schemes>, engine: Engine) 
 
             // While
             if (node instanceof WhileNode) {
+                await invalidate();
                 const d: any = await engine.fetch(node.id as any);
                 const cond = !!d?.cond;
                 if (cond) {
@@ -126,6 +149,7 @@ export async function runFromStart(editor: NodeEditor<Schemes>, engine: Engine) 
                 const name = d?.name ?? "x";
                 ctx.vars[name] = d?.value;
                 ctx.logs.push({ type: "setvar", name, value: d?.value });
+                await invalidate();
                 cur = nextBy(editor, node.id, "next");
                 if (!advanceOrLoop()) { break; }
                 continue;
@@ -171,6 +195,7 @@ export async function runFromStart(editor: NodeEditor<Schemes>, engine: Engine) 
                 }
 
                 OutputCache.set(node.id, { status, headers: outHeaders, body });
+                await invalidate();
                 cur = nextBy(editor, node.id, "next");
                 if (!advanceOrLoop()) { break; }
                 continue;
@@ -187,6 +212,7 @@ export async function runFromStart(editor: NodeEditor<Schemes>, engine: Engine) 
                     result = { error: e?.message || String(e) };
                 }
                 OutputCache.set(node.id, { result });
+                await invalidate();
                 cur = nextBy(editor, node.id, "next");
                 if (!advanceOrLoop()) { break; }
                 continue;

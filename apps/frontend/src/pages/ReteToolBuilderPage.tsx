@@ -124,7 +124,6 @@ export default function ReteToolBuilderPage() {
   const [menuOpen, setMenuOpen] = React.useState(false);
   const menuRef = React.useRef<HTMLDivElement | null>(null);
   const cmRef = React.useRef<ContextMenuPlugin<Schemes> | null>(null);
-  const lastNodeRef = React.useRef<any>(null);
 
   const [search, setSearch] = React.useState("");
   const [factories, setFactories] = React.useState(new Map<string, () => any>());
@@ -132,14 +131,6 @@ export default function ReteToolBuilderPage() {
   const [activeTab, setActiveTab] = React.useState<ToolNodeCategory | null>(null);
   const [catMap, setCatMap] = React.useState<Map<ToolNodeCategory, ToolNodeDefinition[]>>(new Map());
 
-  const getNodeView = React.useCallback(
-    (id: any) => {
-      if (!api) return null as any;
-      const areaAny: any = api.area as any;
-      return areaAny?.nodeViews?.get?.(id) || areaAny?.area?.nodeViews?.get?.(id) || null;
-    },
-    [api]
-  );
 
   const screenToAreaPoint = React.useCallback(
     (host: HTMLElement | null, clientX: number, clientY: number) => {
@@ -160,82 +151,7 @@ export default function ReteToolBuilderPage() {
     [api]
   );
 
-  const getNodeViewPos = React.useCallback(
-    (id: any): { x: number; y: number } => {
-      const view: any = getNodeView(id);
-      return (view?.position as any) ?? { x: 0, y: 0 };
-    },
-    [getNodeView]
-  );
 
-  const findNearestNode = React.useCallback(
-    (clientX: number, clientY: number, host: HTMLElement | null) => {
-      if (!api) return null;
-      const pt = screenToAreaPoint(host, clientX, clientY);
-      let best: any = null;
-      let bestD = Infinity;
-      for (const n of api.editor.getNodes()) {
-        const p = getNodeViewPos(n.id);
-        const d = Math.hypot((p?.x ?? 0) - pt.x, (p?.y ?? 0) - pt.y);
-        if (d < bestD) { bestD = d; best = n; }
-      }
-      return bestD <= 40 ? best : null;
-    },
-    [api, screenToAreaPoint, getNodeViewPos]
-  );
-
-  const deleteCurrentNode = React.useCallback(async () => {
-    if (!api) return;
-    const node = api.editor.getNodes().find((n) => n.id === lastNodeRef.current);
-    if (!node) return;
-    try {
-      await (api.editor as any).removeNode?.(node.id);
-      lastNodeRef.current = null;
-    } catch {
-      try {
-        (api.editor as any).removeNode?.(node.id);
-        lastNodeRef.current = null;
-      } catch {}
-    }
-  }, [api]);
-
-  React.useEffect(() => {
-    const onKey = (ev: KeyboardEvent) => {
-      if (ev.key === "Delete" || ev.key === "Backspace") {
-        ev.preventDefault();
-        deleteCurrentNode();
-      }
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [deleteCurrentNode]);
-
-  React.useEffect(() => {
-    const onMove = (ev: MouseEvent) => {
-      const host = ref.current;
-      if (!host) return;
-      const n = findNearestNode(ev.clientX, ev.clientY, host);
-      if (n) lastNodeRef.current = n.id;
-    };
-    document.addEventListener("mousemove", onMove);
-    return () => document.removeEventListener("mousemove", onMove);
-  }, [findNearestNode]);
-
-  React.useEffect(() => {
-    if (!api) return;
-    const areaPipe = (api.area as any)?.addPipe?.((ctx: any) => {
-      if (ctx && ctx.type === "nodepointerdown" && ctx.data?.id !== undefined) {
-        lastNodeRef.current = ctx.data.id;
-      }
-      if (ctx && ctx.type === "nodeselect" && ctx.data?.id !== undefined) {
-        lastNodeRef.current = ctx.data.id;
-      }
-      return ctx;
-    });
-    return () => {
-      try { areaPipe?.(); } catch {}
-    };
-  }, [api]);
 
   // install nodes and dynamic context menu once api ready
   React.useEffect(() => {
@@ -443,11 +359,6 @@ export default function ReteToolBuilderPage() {
         className="absolute inset-0"
         onDragOver={onCanvasDragOver}
         onDrop={onCanvasDrop}
-        onClickCapture={(e) => {
-          const host = ref.current;
-          const n = findNearestNode(e.clientX, e.clientY, host);
-          if (n) lastNodeRef.current = n.id;
-        }}
       />
 
       {/* Left palette (grouped) */}
