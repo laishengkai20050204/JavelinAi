@@ -1,0 +1,67 @@
+[
+  {
+    "userId": "u1",
+    "conversationId": "c1",
+    "q": "你好",
+    "toolChoice": "auto",
+    "responseMode": "step-json-ndjson",
+    "clientTools": []
+  },
+  {
+    "userId": "u1",
+    "conversationId": "c2",
+    "q": "帮我打开百度主页",
+    "toolChoice": "auto",
+    "responseMode": "step-json-ndjson",
+    "clientTools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "open_url",
+          "description": "在浏览器中打开指定链接",
+          "parameters": {
+            "type": "object",
+            "properties": { "url": { "type": "string", "format": "uri" } },
+            "required": ["url"]
+          },
+          "x-execTarget": "client"
+        }
+      }
+    ]
+  },
+  {
+    "userId": "u1",
+    "conversationId": "c2",
+    "resumeStepId": "",
+    "toolChoice": "auto",
+    "responseMode": "step-json-ndjson",
+    "clientTools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "open_url",
+          "description": "在浏览器中打开指定链接",
+          "parameters": {
+            "type": "object",
+            "properties": { "url": { "type": "string", "format": "uri" } },
+            "required": ["url"]
+          },
+          "x-execTarget": "client"
+        }
+      }
+    ],
+    "clientResults": [
+      {
+        "callId": "call_xxx",
+        "name": "open_url",
+        "status": "SUCCESS",
+        "reused": false,
+        "arguments": { "url": "https://www.baidu.com" },
+        "data": {
+          "payload": { "type": "text", "value": "已在新标签打开 https://www.baidu.com" }
+        }
+      }
+    ]
+  }
+
+]

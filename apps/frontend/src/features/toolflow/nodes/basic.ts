@@ -384,6 +384,75 @@ registerNode({
     create: () => new ToolCallNode()
 });
 
+/* —— Function 定义 —— */
+export class FuncDefNode extends ClassicPreset.Node {
+    constructor() {
+        super("FuncDef");
+        this.addControl("name", new ClassicPreset.InputControl("text", { initial: "fn" }));
+        this.addControl("params", new ClassicPreset.InputControl("text", { initial: "" })); // 逗号分隔：a,b,c
+        this.addOutput("body", new ClassicPreset.Output(controlSocket, "body"));
+    }
+    data() {
+        const nameCtrl: any = (this as any).controls?.get?.("name") ?? (this as any).controls?.["name"];
+        const paramsCtrl: any = (this as any).controls?.get?.("params") ?? (this as any).controls?.["params"];
+        const name = String(nameCtrl?.value ?? "fn");
+        const paramsStr = String(paramsCtrl?.value ?? "").trim();
+        const params = paramsStr
+            ? paramsStr.split(",").map((s) => s.trim()).filter(Boolean)
+            : [];
+        // body:1 只是告诉 engine 这个输出口存在
+        return { fnName: name, params, body: 1 };
+    }
+}
+registerNode({
+    type: "FuncDef",
+    title: "FuncDef",
+    category: "control",
+    create: () => new FuncDefNode()
+});
+
+/* —— Function Return —— */
+export class FuncReturnNode extends ClassicPreset.Node {
+    constructor() {
+        super("FuncReturn");
+        this.addInput("in", new ClassicPreset.Input(controlSocket, "in"));
+        this.addInput("value", new ClassicPreset.Input(jsonSocket, "value"));
+    }
+    data(inputs: { value?: any[] }) {
+        return { value: inputs.value?.[0] };
+    }
+}
+registerNode({
+    type: "FuncReturn",
+    title: "FuncReturn",
+    category: "control",
+    create: () => new FuncReturnNode()
+});
+
+/* —— FunctionCall —— */
+export class FunctionCallNode extends ClassicPreset.Node {
+    constructor() {
+        super("FunctionCall");
+        this.addInput("in", new ClassicPreset.Input(controlSocket, "in"));
+        this.addControl("name", new ClassicPreset.InputControl("text", { initial: "fn" }));
+        // args: { a: 1, b: 2 } 这样的对象
+        this.addInput("args", new ClassicPreset.Input(jsonSocket, "args"));
+        this.addOutput("result", new ClassicPreset.Output(jsonSocket, "result"));
+        this.addOutput("next", new ClassicPreset.Output(controlSocket, "next"));
+    }
+    data() {
+        const cached = OutputCache.get(this.id) ?? { result: null };
+        return { result: cached.result, next: 1 };
+    }
+}
+registerNode({
+    type: "FunctionCall",
+    title: "FunctionCall",
+    category: "control",
+    create: () => new FunctionCallNode()
+});
+
+
 /* ============== Schemes / Engine / AreaExtra ============== */
 export type NodeU =
     | StartNode | EndNode
@@ -392,7 +461,9 @@ export type NodeU =
     | AddNode | PromptNode
     | LoggerNode | OutputNode
     | SetVarNode | GetVarNode
-    | JsonParseNode | JsonStringifyNode | HttpFetchNode | ToolCallNode;
+    | JsonParseNode | JsonStringifyNode
+    | HttpFetchNode | ToolCallNode
+    | FuncDefNode | FuncReturnNode | FunctionCallNode;
 
 export class Conn<A extends NodeU, B extends NodeU> extends ClassicPreset.Connection<A, B> {}
 export type ConnU = Conn<NodeU, NodeU>;

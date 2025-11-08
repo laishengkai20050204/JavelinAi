@@ -14,7 +14,9 @@ import {
     EndNode,
     SetVarNode,
     HttpFetchNode,
-    ToolCallNode
+    ToolCallNode,
+    FuncReturnNode,
+    FunctionCallNode
 } from "../nodes/basic";
 
 // 读取某节点某输入端口的上游值（可能多值，返回数组）
@@ -53,22 +55,24 @@ function nextBy(editor: NodeEditor<Schemes>, fromId: any, port: string) {
     return ctrl ? ctrl.target : undefined;
 }
 
-export async function runFromStart(editor: NodeEditor<Schemes>, engine: Engine) {
-    await (engine as any)?.reset?.();
+type RunCtx = { vars: Record<string, any>; logs: any[] };
+type RunResult = { ok: boolean; logs: any[]; vars: Record<string, any>; returnValue?: any };
 
+async function runFromEntry(
+    editor: NodeEditor<Schemes>,
+    engine: Engine,
+    entryId: any,
+    ctx: RunCtx,
+    options?: { allowReturn?: boolean }
+): Promise<RunResult> {
     const ids = idMap(editor);
-    const starts = editor.getNodes().filter((n: any) => n.label === "Start");
-    if (starts.length === 0) throw new Error("没有 Start 节点");
-    const start = starts[0] as StartNode;
-
-    const ctx = { vars: Object.create(null) as Record<string, any>, logs: [] as any[] };
-
-    // 将变量读取钩子注入给 GetVar 节点
-    const prev = Hooks.getVar;
+    const prevGetVar = Hooks.getVar;
     Hooks.getVar = (name: string) => ctx.vars[name];
 
+    await (engine as any)?.reset?.();
+
     try {
-        let cur: any = nextBy(editor, start.id, "next");
+        let cur: any = entryId;
         let guard = 0;
         const invalidate = async () => { await (engine as any)?.reset?.(); };
         const loopStack: any[] = [];
@@ -86,6 +90,7 @@ export async function runFromStart(editor: NodeEditor<Schemes>, engine: Engine) 
             guard++; if (guard > 5000) throw new Error("执行步数过多，可能出现死循环");
             const node = ids.get(cur);
 
+            // runtime 分发（你之前的那段）
             const typeOrLabel = String((node as any)?.type ?? (node as any)?.label);
             const rt = getRuntime(typeOrLabel);
             if (rt) {
@@ -102,9 +107,8 @@ export async function runFromStart(editor: NodeEditor<Schemes>, engine: Engine) 
                 const res: any = await rt(api as any, node);
                 cur = res?.next ?? nextBy(editor, node.id, "next");
                 if (!advanceOrLoop()) break;
-                continue; // 命中 runtime 的新节点直接返回，不再进入旧分支
+                continue;
             }
-
 
             // If
             if (node instanceof IfNode) {
@@ -128,7 +132,6 @@ export async function runFromStart(editor: NodeEditor<Schemes>, engine: Engine) 
                     }
                     const bodyEntry = nextBy(editor, node.id, "body");
                     if (bodyEntry === undefined) {
-                        // no body wired, immediately re-evaluate condition
                         continue;
                     }
                     cur = bodyEntry;
@@ -145,7 +148,7 @@ export async function runFromStart(editor: NodeEditor<Schemes>, engine: Engine) 
 
             // SetVar
             if (node instanceof SetVarNode) {
-                const d: any = await engine.fetch(node.id as any); // { name, value, next }
+                const d: any = await engine.fetch(node.id as any);
                 const name = d?.name ?? "x";
                 ctx.vars[name] = d?.value;
                 ctx.logs.push({ type: "setvar", name, value: d?.value });
@@ -218,6 +221,72 @@ export async function runFromStart(editor: NodeEditor<Schemes>, engine: Engine) 
                 continue;
             }
 
+            // FunctionCall —— 这里是函数调用逻辑
+            if (node instanceof FunctionCallNode) {
+                const fnName = String(readControl(node, "name") ?? "");
+                const [argsObj] = await readInput(editor, engine, node.id, "args");
+                const args = (argsObj && typeof argsObj === "object") ? argsObj : {};
+
+                const allNodes = editor.getNodes() as any[];
+                const def = allNodes.find((n: any) =>
+                    String(n.label) === "FuncDef" &&
+                    String(readControl(n, "name") ?? "") === fnName
+                );
+
+                if (!def) {
+                    ctx.logs.push({ type: "error", node: String(node.id), message: `Function not found: ${fnName}` });
+                    OutputCache.set(node.id, { result: null });
+                    await invalidate();
+                    cur = nextBy(editor, node.id, "next");
+                    if (!advanceOrLoop()) { break; }
+                    continue;
+                }
+
+                const paramsStr = String(readControl(def, "params") ?? "");
+                const paramNames = paramsStr
+                    .split(",")
+                    .map((s) => s.trim())
+                    .filter(Boolean);
+
+                const localCtx: RunCtx = {
+                    vars: Object.create(ctx.vars),
+                    logs: []
+                };
+                for (const p of paramNames) {
+                    if (Object.prototype.hasOwnProperty.call(args, p)) {
+                        localCtx.vars[p] = args[p];
+                    }
+                }
+
+                ctx.logs.push({ type: "fn_enter", node: String(node.id), name: fnName });
+
+                const bodyEntry = nextBy(editor, def.id, "body");
+                let retValue: any = undefined;
+                if (bodyEntry !== undefined) {
+                    const sub = await runFromEntry(editor, engine, bodyEntry, localCtx, { allowReturn: true });
+                    retValue = sub.returnValue;
+                    // 合并函数内部日志（打标记 fn）
+                    ctx.logs.push(...sub.logs.map((x: any) => ({ ...x, fn: fnName })));
+                }
+
+                ctx.logs.push({ type: "fn_exit", node: String(node.id), name: fnName, value: retValue });
+
+                OutputCache.set(node.id, { result: retValue });
+                await invalidate();
+
+                cur = nextBy(editor, node.id, "next");
+                if (!advanceOrLoop()) { break; }
+                continue;
+            }
+
+            // 函数返回节点（仅在 allowReturn 下生效）
+            if (options?.allowReturn && node instanceof FuncReturnNode) {
+                const d: any = await engine.fetch(node.id as any);
+                const value = d?.value;
+                ctx.logs.push({ type: "return", node: String(node.id), value });
+                return { ok: true, logs: ctx.logs, vars: ctx.vars, returnValue: value };
+            }
+
             // Logger
             if (node instanceof LoggerNode) {
                 const d: any = await engine.fetch(node.id as any);
@@ -254,6 +323,24 @@ export async function runFromStart(editor: NodeEditor<Schemes>, engine: Engine) 
 
         return { ok: true, logs: ctx.logs, vars: ctx.vars };
     } finally {
-        Hooks.getVar = prev; // 恢复
+        Hooks.getVar = prevGetVar;
     }
+}
+
+
+export async function runFromStart(editor: NodeEditor<Schemes>, engine: Engine) {
+    const ids = idMap(editor);
+    const starts = editor.getNodes().filter((n: any) => n.label === "Start");
+    if (starts.length === 0) throw new Error("没有 Start 节点");
+    const start = starts[0] as StartNode;
+
+    const ctx: RunCtx = { vars: Object.create(null) as Record<string, any>, logs: [] as any[] };
+
+    const entry = nextBy(editor, start.id, "next");
+    if (entry === undefined) {
+        return { ok: true, logs: ctx.logs, vars: ctx.vars };
+    }
+
+    const res = await runFromEntry(editor, engine, entry, ctx, { allowReturn: false });
+    return res;
 }
