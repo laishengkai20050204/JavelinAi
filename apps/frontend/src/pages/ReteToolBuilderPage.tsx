@@ -201,65 +201,87 @@ export default function ReteToolBuilderPage() {
   };
 
   // file ops
-  const save = React.useCallback(() => {
-    if (!api) return;
-    const { editor, area } = api;
-    cleanupDanglingConnections(editor);
-    const g = exportGraph(editor, area);
-    localStorage.setItem(LSK, JSON.stringify(g));
-  }, [api]);
+    const save = React.useCallback(() => {
+        if (!api) return;
+        const { editor, area } = api;
+        cleanupDanglingConnections(editor);
+        const g = exportGraph(editor, area);
+        localStorage.setItem(LSK, JSON.stringify(g));
+    }, [api]);
 
-  const load = React.useCallback(async () => {
-    if (!api) return;
-    const { editor, area } = api;
-    const raw = localStorage.getItem(LSK);
-    if (!raw) return;
-    const g = JSON.parse(raw) as GraphJSON;
-    await importGraph(g, editor, area);
-  }, [api]);
+    // ⬇⬇⬇ 把 resetCanvas 提前到这里 ⬇⬇⬇
+    const resetCanvas = React.useCallback(async () => {
+        if (!api) return;
+        const { editor, area } = api;
+        for (const c of [...editor.getConnections()]) {
+            try { await (editor as any).removeConnection?.(c); }
+            catch { try { await (editor as any).removeConnection?.((c as any).id); } catch {} }
+        }
+        for (const n of [...editor.getNodes()]) {
+            let ok = false;
+            try { await (editor as any).removeNode?.(n.id as any); ok = true; } catch {}
+            if (!ok) { try { await (editor as any).removeNode?.(n as any); } catch {} }
+        }
+        try { (area as any)?.area?.update?.(); } catch {}
+        try { (area as any)?.update?.(); } catch {}
+        try { AreaExtensions.zoomAt(area, editor.getNodes()); } catch {}
+        // 强制把引擎也复位一次
+        try { await (api.engine as any)?.reset?.(); } catch {}
+    }, [api]);
 
-  const exportJson = React.useCallback(async () => {
-    if (!api) return;
-    const { editor, area } = api;
-    const g = exportGraph(editor as any, area as any);
-    try {
-      await navigator.clipboard.writeText(JSON.stringify(g, null, 2));
-      alert("Copied to clipboard");
-    } catch {
-      const blob = new Blob([JSON.stringify(g, null, 2)], { type: "application/json" });
-      const url = URL.createObjectURL(blob);
-      window.open(url, "_blank");
-    }
-  }, [api]);
+    const load = React.useCallback(async () => {
+        if (!api) return;
+        const { editor, area, engine } = api;
+        const raw = localStorage.getItem(LSK);
+        if (!raw) return;
+        const g = JSON.parse(raw) as GraphJSON;
 
-  const importFromClipboard = React.useCallback(async () => {
-    if (!api) return;
-    const { editor, area } = api;
-    try {
-      const text = await navigator.clipboard.readText();
-      const g = JSON.parse(text);
-      await importGraph(g, editor as any, area as any);
-    } catch (e: any) {
-      alert("Import failed: " + (e?.message || String(e)));
-    }
-  }, [api]);
+        await (engine as any)?.reset?.();
+        await resetCanvas();
 
-  const resetCanvas = React.useCallback(async () => {
-    if (!api) return;
-    const { editor, area } = api;
-    for (const c of [...editor.getConnections()]) {
-      try { await (editor as any).removeConnection?.(c); }
-      catch { try { await (editor as any).removeConnection?.((c as any).id); } catch { } }
-    }
-    for (const n of [...editor.getNodes()]) {
-      let ok = false;
-      try { await (editor as any).removeNode?.(n.id as any); ok = true; } catch { }
-      if (!ok) { try { await (editor as any).removeNode?.(n as any); } catch { } }
-    }
-    try { (area as any)?.area?.update?.(); } catch { }
-    try { (area as any)?.update?.(); } catch { }
-    try { AreaExtensions.zoomAt(area, editor.getNodes()); } catch { }
-  }, [api]);
+        await importGraph(g, editor as any, area as any);
+
+        await (engine as any)?.reset?.();
+        try { (area as any)?.area?.update?.(); } catch {}
+        try { (area as any)?.update?.(); } catch {}
+    }, [api, resetCanvas]);
+
+    const exportJson = React.useCallback(async () => {
+        if (!api) return;
+        const { editor, area } = api;
+        const g = exportGraph(editor as any, area as any);
+        try {
+            await navigator.clipboard.writeText(JSON.stringify(g, null, 2));
+            alert("Copied to clipboard");
+        } catch {
+            const blob = new Blob([JSON.stringify(g, null, 2)], { type: "application/json" });
+            const url = URL.createObjectURL(blob);
+            window.open(url, "_blank");
+        }
+    }, [api]);
+
+    const importFromClipboard = React.useCallback(async () => {
+        if (!api) return;
+        const { editor, area, engine } = api;
+        try {
+            const text = await navigator.clipboard.readText();
+            const g = JSON.parse(text) as GraphJSON;
+
+            await (engine as any)?.reset?.();
+            await resetCanvas();
+
+            await importGraph(g, editor as any, area as any);
+
+            await (engine as any)?.reset?.();
+            try { (area as any)?.area?.update?.(); } catch {}
+            try { (area as any)?.update?.(); } catch {}
+        } catch (e: any) {
+            alert("Import failed: " + (e?.message || String(e)));
+        }
+    }, [api, resetCanvas]);
+
+
+
 
   React.useEffect(() => {
     if (!api || cmRef.current) return;
