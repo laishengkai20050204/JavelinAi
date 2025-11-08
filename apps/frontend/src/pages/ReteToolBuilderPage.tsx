@@ -189,11 +189,11 @@ export default function ReteToolBuilderPage() {
     const node = api.editor.getNodes().find((n) => n.id === lastNodeRef.current);
     if (!node) return;
     try {
-      await (api.editor as any).removeNode?.(node);
+      await (api.editor as any).removeNode?.(node.id);
       lastNodeRef.current = null;
     } catch {
       try {
-        (api.editor as any).removeNode?.(node);
+        (api.editor as any).removeNode?.(node.id);
         lastNodeRef.current = null;
       } catch {}
     }
