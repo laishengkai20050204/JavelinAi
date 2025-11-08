@@ -1,0 +1,115 @@
+{
+  "version": 1,
+  "nodes": [
+    {
+      "id": "e6a8b028ef65ee52",
+      "type": "Start",
+      "position": {
+        "x": -400,
+        "y": 0
+      },
+      "controls": {}
+    },
+    {
+      "id": "effdc13c0a2d5e8c",
+      "type": "Boolean",
+      "position": {
+        "x": -412,
+        "y": 145.60006713867188
+      },
+      "controls": {
+        "value": "true"
+      }
+    },
+    {
+      "id": "0fea8203f06a9904",
+      "type": "While",
+      "position": {
+        "x": -147.5612915392566,
+        "y": -37.799143896581114
+      },
+      "controls": {}
+    },
+    {
+      "id": "81d6a87598da8edd",
+      "type": "Logger",
+      "position": {
+        "x": 251.5900072639371,
+        "y": -208.08895443772565
+      },
+      "controls": {}
+    },
+    {
+      "id": "5d635393bcafbfde",
+      "type": "End",
+      "position": {
+        "x": 120,
+        "y": 200
+      },
+      "controls": {}
+    },
+    {
+      "id": "9ccf33de940b2ef1",
+      "type": "String",
+      "position": {
+        "x": 145.3432285638503,
+        "y": 40.89379454247745
+      },
+      "controls": {
+        "value": "Hello"
+      }
+    }
+  ],
+  "connections": [
+    {
+      "from": {
+        "id": "effdc13c0a2d5e8c",
+        "port": "out"
+      },
+      "to": {
+        "id": "0fea8203f06a9904",
+        "port": "cond"
+      }
+    },
+    {
+      "from": {
+        "id": "0fea8203f06a9904",
+        "port": "body"
+      },
+      "to": {
+        "id": "81d6a87598da8edd",
+        "port": "in"
+      }
+    },
+    {
+      "from": {
+        "id": "0fea8203f06a9904",
+        "port": "next"
+      },
+      "to": {
+        "id": "5d635393bcafbfde",
+        "port": "in"
+      }
+    },
+    {
+      "from": {
+        "id": "9ccf33de940b2ef1",
+        "port": "out"
+      },
+      "to": {
+        "id": "81d6a87598da8edd",
+        "port": "text"
+      }
+    },
+    {
+      "from": {
+        "id": "e6a8b028ef65ee52",
+        "port": "next"
+      },
+      "to": {
+        "id": "0fea8203f06a9904",
+        "port": "in"
+      }
+    }
+  ]
+}

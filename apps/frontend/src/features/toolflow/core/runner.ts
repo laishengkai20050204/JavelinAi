@@ -69,6 +69,16 @@ export async function runFromStart(editor: NodeEditor<Schemes>, engine: Engine) 
     try {
         let cur: any = nextBy(editor, start.id, "next");
         let guard = 0;
+        const loopStack: any[] = [];
+        const advanceOrLoop = () => {
+            if (cur !== undefined) { return true; }
+            const loopNodeId = loopStack[loopStack.length - 1];
+            if (loopNodeId !== undefined) {
+                cur = loopNodeId;
+                return true;
+            }
+            return false;
+        };
 
         while (cur !== undefined) {
             guard++; if (guard > 5000) throw new Error("执行步数过多，可能出现死循环");
@@ -80,6 +90,7 @@ export async function runFromStart(editor: NodeEditor<Schemes>, engine: Engine) 
                 const cond = !!d?.cond;
                 ctx.logs.push({ type: "branch", node: String(node.id), path: cond ? "then" : "else" });
                 cur = nextBy(editor, node.id, cond ? "then" : "else");
+                if (!advanceOrLoop()) { break; }
                 continue;
             }
 
@@ -89,11 +100,23 @@ export async function runFromStart(editor: NodeEditor<Schemes>, engine: Engine) 
                 const cond = !!d?.cond;
                 if (cond) {
                     ctx.logs.push({ type: "loop", node: String(node.id), action: "enter" });
-                    cur = nextBy(editor, node.id, "body");
+                    if (loopStack[loopStack.length - 1] !== node.id) {
+                        loopStack.push(node.id);
+                    }
+                    const bodyEntry = nextBy(editor, node.id, "body");
+                    if (bodyEntry === undefined) {
+                        // no body wired, immediately re-evaluate condition
+                        continue;
+                    }
+                    cur = bodyEntry;
                 } else {
                     ctx.logs.push({ type: "loop", node: String(node.id), action: "exit" });
+                    if (loopStack[loopStack.length - 1] === node.id) {
+                        loopStack.pop();
+                    }
                     cur = nextBy(editor, node.id, "next");
                 }
+                if (!advanceOrLoop()) { break; }
                 continue;
             }
 
@@ -104,6 +127,7 @@ export async function runFromStart(editor: NodeEditor<Schemes>, engine: Engine) 
                 ctx.vars[name] = d?.value;
                 ctx.logs.push({ type: "setvar", name, value: d?.value });
                 cur = nextBy(editor, node.id, "next");
+                if (!advanceOrLoop()) { break; }
                 continue;
             }
 
@@ -148,6 +172,7 @@ export async function runFromStart(editor: NodeEditor<Schemes>, engine: Engine) 
 
                 OutputCache.set(node.id, { status, headers: outHeaders, body });
                 cur = nextBy(editor, node.id, "next");
+                if (!advanceOrLoop()) { break; }
                 continue;
             }
 
@@ -163,6 +188,7 @@ export async function runFromStart(editor: NodeEditor<Schemes>, engine: Engine) 
                 }
                 OutputCache.set(node.id, { result });
                 cur = nextBy(editor, node.id, "next");
+                if (!advanceOrLoop()) { break; }
                 continue;
             }
 
@@ -172,6 +198,7 @@ export async function runFromStart(editor: NodeEditor<Schemes>, engine: Engine) 
                 if (d?.text !== undefined) { console.log("[Logger]", d.text); ctx.logs.push({ type: "log", text: String(d.text) }); }
                 else { console.log("[Logger]", d?.json); ctx.logs.push({ type: "log", json: d?.json }); }
                 cur = nextBy(editor, node.id, "next");
+                if (!advanceOrLoop()) { break; }
                 continue;
             }
 
@@ -189,6 +216,12 @@ export async function runFromStart(editor: NodeEditor<Schemes>, engine: Engine) 
             const cons = editor.getConnections().filter((c) => c.source === node.id);
             const ctrl = cons.find((c) => isControlConn(editor, c));
             if (ctrl) { cur = ctrl.target; continue; }
+
+            if (loopStack.length) {
+                const loopNodeId = loopStack[loopStack.length - 1];
+                cur = loopNodeId;
+                continue;
+            }
 
             break;
         }
