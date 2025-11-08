@@ -223,14 +223,17 @@ export default function ReteToolBuilderPage() {
 
   React.useEffect(() => {
     if (!api) return;
-    const pipe = api.editor.addPipe((ctx: any) => {
-      if (ctx && ctx.type === "nodepointerdown" && ctx.data) {
+    const areaPipe = (api.area as any)?.addPipe?.((ctx: any) => {
+      if (ctx && ctx.type === "nodepointerdown" && ctx.data?.id !== undefined) {
+        lastNodeRef.current = ctx.data.id;
+      }
+      if (ctx && ctx.type === "nodeselect" && ctx.data?.id !== undefined) {
         lastNodeRef.current = ctx.data.id;
       }
       return ctx;
     });
     return () => {
-      try { pipe?.(); } catch {}
+      try { areaPipe?.(); } catch {}
     };
   }, [api]);
 
