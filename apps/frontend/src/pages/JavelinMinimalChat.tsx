@@ -34,6 +34,9 @@ const NDJSON_PATH = "/ai/v3/chat/step/ndjson"; // your NDJSON endpoint
 const STORAGE_KEY = "javelin.chat.v3";
 const UNTITLED = "新会话";
 
+// 工具管理
+const TOOLS_SELECTION_KEY = "javelin.chat.v3.tools.selection";
+
 // Utilities
 const newId = () => Math.random().toString(36).slice(2, 10);
 const joinUrl = (a: string, b: string) => (a.endsWith("/") ? a.slice(0, -1) : a) + b;
@@ -306,6 +309,10 @@ export default function JavelinMinimalChat() {
     const [renameId, setRenameId] = useState<string | null>(null);
     // NEW: userId 输入
     const [userId, setUserId] = useState<string>("u1");
+    // 工具管理
+    const [toolPanelOpen, setToolPanelOpen] = useState(true);
+    const [exposed, setExposed] = useState<Record<string, boolean>>({});
+
 
     const abortRef = useRef<AbortController | null>(null);
     const listRef = useRef<HTMLDivElement | null>(null);
@@ -320,19 +327,6 @@ export default function JavelinMinimalChat() {
     // Derived
     const messages = useMemo(() => convMessages[activeId] ?? [], [convMessages, activeId]);
 
-    // 内置一个简易 debug_tool，方便后端测试 clientCalls
-    const debugClientTool: ClientTool = {
-        manifest: {
-            name: "client_debug_tool",
-            description: "前端打印并回传参数的调试工具",
-            "x-execTarget": "client",
-            parameters: { type: "object", properties: { note: { type: "string", default: "" } }, required: [] }
-        },
-        async execute(args, ctx) {
-            console.log("[client] debug_tool execute:", { args, ctx });
-            return { result: { ok: true, echo: args, ctx } };
-        }
-    };
 
     const [clientTools, setClientTools] = useState<ClientTool[]>([]);
     const processedCallIdsRef = useRef<Set<string>>(new Set());
@@ -349,9 +343,35 @@ export default function JavelinMinimalChat() {
                     })
                 );
             }
-            setClientTools([debugClientTool, ...compiled]);
+            setClientTools(compiled);
         })();
     }, []);
+
+    // 第一次挂载时载入已保存的工具开关
+    useEffect(() => {
+        try {
+            const raw = localStorage.getItem(TOOLS_SELECTION_KEY);
+            if (raw) setExposed(JSON.parse(raw) as Record<string, boolean>);
+        } catch {}
+    }, []);
+
+// 当 clientTools 变化时，对齐开关并持久化
+    useEffect(() => {
+        setExposed(prev => {
+            const next: Record<string, boolean> = { ...prev };
+            for (const t of clientTools) {
+                const name = t.manifest?.name;
+                if (name && next[name] === undefined) next[name] = true; // 默认开启
+            }
+            // 清理已不存在的工具
+            for (const k of Object.keys(next)) {
+                if (!clientTools.some(t => t.manifest?.name === k)) delete next[k];
+            }
+            try { localStorage.setItem(TOOLS_SELECTION_KEY, JSON.stringify(next)); } catch {}
+            return next;
+        });
+    }, [clientTools]);
+
 
     // Auto-scroll
     useEffect(() => {
@@ -441,15 +461,45 @@ export default function JavelinMinimalChat() {
     };
 
     function scheduleClientCall(stepId: string, call: any) {
-        const name = call?.name;
-        const callId = call?.id || call?.callId || (crypto as any)?.randomUUID?.() || String(Date.now());
+
+
+        // 兼容多种 name 字段
+        const name =
+            call?.name ||
+            call?.function?.name || // 有些后端会包一层 { function: { name, arguments } }
+            call?.tool?.name ||
+            call?.tool_name;
+
+        // 兼容多种 id 字段
+        const callId =
+            call?.id ||
+            call?.callId ||
+            call?.tool_call_id ||
+            (crypto as any)?.randomUUID?.() ||
+            String(Date.now());
+
         if (!name) return;
         if (processedCallIdsRef.current.has(callId)) return;
         processedCallIdsRef.current.add(callId);
 
-        const args = call?.arguments ?? call?.args ?? {};
+        // ✅ 关键：把字符串 arguments 解析成对象
+        let args = call?.arguments ?? call?.args ?? call?.function?.arguments ?? {};
+        if (typeof args === "string") {
+            try { args = JSON.parse(args); } catch { /* 忽略解析失败，保持原值 */ }
+        }
+
+        // 🔎 日志：收到的工具调用
+        console.log("[scheduleClientCall]", {
+            stepId,
+            name,
+            callId,
+            raw: call,
+            parsedArgs: args
+        });
+
         void executeClientTool(stepId, name, callId, args);
     }
+
 
     function createConversation() {
         abortRef.current?.abort();
@@ -627,8 +677,16 @@ export default function JavelinMinimalChat() {
     const safeParseJson = (s?: string) => { try { return s ? JSON.parse(s) : {}; } catch { return {}; } };
 
     function manifestList() {
-        return clientTools.map(t => ({ type: "function", function: t.manifest }));
+        const enabledNames = new Set(
+            Object.entries(exposed)
+                .filter(([, on]) => !!on)
+                .map(([name]) => name)
+        );
+        return clientTools
+            .filter(t => enabledNames.has(t.manifest?.name))
+            .map(t => ({ type: "function", function: t.manifest }));
     }
+
 
     function toClientDataPayload(out: any) {
         // 尽量兼容：string→text；已有 payload 原样；否则当 json
@@ -665,6 +723,9 @@ export default function JavelinMinimalChat() {
 
 
     async function executeClientTool(stepId: string, name: string, callId: string, rawArgs: any) {
+
+        console.log("[executeClientTool] start", { stepId, name, callId, rawArgs });
+
         const tool = clientTools.find(t => t.manifest.name === name);
         if (!tool) {
             const clientResult = {
@@ -678,7 +739,9 @@ export default function JavelinMinimalChat() {
             return;
         }
         try {
+            console.log("[executeClientTool] executing", { name, args: rawArgs });
             const out = await tool.execute(rawArgs ?? {}, { userId, conversationId: activeId });
+            console.log("[executeClientTool] executed", { name, out });
             const clientResult = {
                 callId, name,
                     status: "SUCCESS",
@@ -939,6 +1002,50 @@ export default function JavelinMinimalChat() {
                                         placeholder="搜索会话…"
                                         className="w-full rounded-2xl border border-slate-200 dark:border-slate-800 bg-transparent pl-8 pr-3 py-2 text-sm outline-none"
                                     />
+                                </div>
+                                {/* Tools panel */}
+                                <div className="mb-2 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white/60 dark:bg-slate-900/40">
+                                    <button
+                                        onClick={() => setToolPanelOpen(v => !v)}
+                                        className="w-full flex items-center justify-between px-3 py-2 text-xs font-medium"
+                                    >
+                                        <span>工具（已启用 {Object.values(exposed).filter(Boolean).length}/{clientTools.length}）</span>
+                                        <span className="opacity-60">{toolPanelOpen ? "收起" : "展开"}</span>
+                                    </button>
+                                    {toolPanelOpen && (
+                                        <div className="max-h-44 overflow-auto px-2 pb-2 space-y-1">
+                                            {clientTools.length === 0 && (
+                                                <div className="text-[11px] text-slate-500 dark:text-slate-400 px-2 py-3">
+                                                    暂无客户端工具（去 Tool Builder 新建）
+                                                </div>
+                                            )}
+                                            {clientTools.map(t => {
+                                                const name = t.manifest?.name || "(unnamed)";
+                                                const desc = t.manifest?.description || "";
+                                                const on = !!exposed[name];
+                                                return (
+                                                    <label key={name} className="flex items-center gap-2 rounded-xl px-2 py-1 hover:bg-black/5 dark:hover:bg-white/10">
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={on}
+                                                            onChange={(e) => {
+                                                                const v = e.target.checked;
+                                                                setExposed(prev => {
+                                                                    const next = { ...prev, [name]: v };
+                                                                    try { localStorage.setItem(TOOLS_SELECTION_KEY, JSON.stringify(next)); } catch {}
+                                                                    return next;
+                                                                });
+                                                            }}
+                                                        />
+                                                        <div className="min-w-0">
+                                                            <div className="text-xs font-medium truncate">{name}</div>
+                                                            {desc && <div className="text-[11px] opacity-70 truncate">{desc}</div>}
+                                                        </div>
+                                                    </label>
+                                                );
+                                            })}
+                                        </div>
+                                    )}
                                 </div>
 
                                 <div className="space-y-1 max-h-[68vh] overflow-y-auto pr-1">

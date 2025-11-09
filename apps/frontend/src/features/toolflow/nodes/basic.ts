@@ -288,7 +288,8 @@ registerNode({
     type: "GetVar",
     title: "GetVar",
     category: "variable",
-    create: () => new GetVarNode()
+    create: () => new GetVarNode(),
+
 });
 
 /* —— JSON —— */

@@ -86,7 +86,7 @@ public class OrchestratedChatController {
             }
         }
 
-        log.debug("tools : {}", req.clientTools());
+//        if (req.clientResults())
 
         // === 通过校验，进入编排 ===
         return service.run(req).map(this::toNdjsonLine);

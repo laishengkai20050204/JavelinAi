@@ -24,6 +24,9 @@ import { cleanupDanglingConnections, type GraphJSON } from "../features/toolflow
 import { getContextMenuItems, getNodeDefsByCategory } from "../features/toolflow/core/nodeRegistry";
 import type { ToolNodeCategory, ToolNodeDefinition } from "../features/toolflow/core/nodeRegistry";
 
+import { listSavedTools, removeTool } from "../features/clientTools/storage";
+import type { SavedToolBundle } from "../features/clientTools/types";
+
 const LSK = "javelin.rete.graph.v1";
 
 // Minimal block palette item for drag preview
@@ -123,7 +126,8 @@ async function createEditor(container: HTMLElement) {
 export default function ReteToolBuilderPage() {
   const [ref, api] = useRete(createEditor);
   const [result, setResult] = React.useState<string>("");
-  const [panelOpen, setPanelOpen] = React.useState(false);
+  const [dockOpen, setDockOpen] = React.useState(true);
+  const [rightTab, setRightTab] = React.useState<'tools' | 'results'>('tools');
   const [menuOpen, setMenuOpen] = React.useState(false);
   const menuRef = React.useRef<HTMLDivElement | null>(null);
   const cmRef = React.useRef<ContextMenuPlugin<Schemes> | null>(null);
@@ -134,8 +138,18 @@ export default function ReteToolBuilderPage() {
   const [activeTab, setActiveTab] = React.useState<ToolNodeCategory | null>(null);
   const [catMap, setCatMap] = React.useState<Map<ToolNodeCategory, ToolNodeDefinition[]>>(new Map());
 
+    const [myTools, setMyTools] = React.useState<SavedToolBundle[]>([]);
 
-  const screenToAreaPoint = React.useCallback(
+    function refreshTools() {
+        setMyTools(listSavedTools());
+    }
+
+    React.useEffect(() => {
+        refreshTools();
+    }, []);
+
+
+    const screenToAreaPoint = React.useCallback(
     (host: HTMLElement | null, clientX: number, clientY: number) => {
       const rect = host?.getBoundingClientRect();
       const ax = rect ? clientX - rect.left : clientX;
@@ -216,6 +230,7 @@ export default function ReteToolBuilderPage() {
 
         const bundle = await buildAndSaveToolBundle(graph, { name, description, version: "1.0.0" });
         saveToolBundle(bundle);
+        refreshTools(); // ← 新增：保存后刷新“我的工具”列表
         alert(`已保存前端工具：${bundle.meta.name}`);
     }, [api]);
 
@@ -470,6 +485,7 @@ export default function ReteToolBuilderPage() {
             );
           })}
         </div>
+
       </div>
 
       {/* Top menu */}
@@ -497,36 +513,147 @@ export default function ReteToolBuilderPage() {
                 <button onClick={() => { setMenuOpen(false); runFlow(); }} className="rounded-md px-3 py-1.5 text-left hover:bg-neutral-50 dark:hover bg-neutral-700">Run flow (Ctrl+Shift+Enter)</button>
                 <button onClick={() => { setMenuOpen(false); diagnose(); }} className="rounded-md px-3 py-1.5 text-left hover:bg-neutral-50 dark:hover bg-neutral-700">Diagnose (print nodes & links)</button>
               </div>
-              <div className="px-3 py-2 text-[11px] font-medium text-neutral-500 dark:text-neutral-400">View</div>
-              <div className="flex flex-col px-2 pb-3">
-                <button onClick={() => { setMenuOpen(false); setPanelOpen((v) => !v); }} className="rounded-md px-3 py-1.5 text-left hover:bg-neutral-50 dark:hover bg-neutral-700">{panelOpen ? "Hide result (Ctrl+`)" : "Show result (Ctrl+`)"}</button>
-                <button onClick={() => { setMenuOpen(false); setResult(""); }} className="rounded-md px-3 py-1.5 text-left hover:bg-neutral-50 dark:hover bg-neutral-700">Clear result</button>
-              </div>
+                <div className="px-3 py-2 text-[11px] font-medium text-neutral-500 dark:text-neutral-400">View</div>
+                <div className="flex flex-col px-2 pb-3">
+                    <button
+                        onClick={() => { setMenuOpen(false); setDockOpen(v => !v); }}
+                        className="rounded-md px-3 py-1.5 text-left hover:bg-neutral-50 dark:hover:bg-neutral-700"
+                    >
+                        {dockOpen ? "Hide right dock (Ctrl+`)" : "Show right dock (Ctrl+`)"}
+                    </button>
+                    <button
+                        onClick={() => { setMenuOpen(false); setRightTab('results'); setDockOpen(true); }}
+                        className="rounded-md px-3 py-1.5 text-left hover:bg-neutral-50 dark:hover:bg-neutral-700"
+                    >
+                        Focus Results
+                    </button>
+                    <button
+                        onClick={() => { setMenuOpen(false); setRightTab('tools'); setDockOpen(true); refreshTools(); }}
+                        className="rounded-md px-3 py-1.5 text-left hover:bg-neutral-50 dark:hover:bg-neutral-700"
+                    >
+                        Focus My Tools
+                    </button>
+                    <button
+                        onClick={() => { setMenuOpen(false); setResult(""); }}
+                        className="rounded-md px-3 py-1.5 text-left hover:bg-neutral-50 dark:hover:bg-neutral-700"
+                    >
+                        Clear Results
+                    </button>
+                </div>
+
             </div>
           )}
         </div>
       </div>
 
-      {/* Result panel */}
-      <div
-        className={`pointer-events-auto absolute right-4 top-4 z-10 max-h-[60vh] overflow-hidden rounded-2xl shadow-md backdrop-blur transition-all duration-200 ${panelOpen ? "w-[520px] bg-white/90 dark:bg-neutral-800/80" : "w-[44px] bg-white/70 dark:bg-neutral-800/60"}`}
-        style={{ resize: panelOpen ? ("horizontal" as const) : "none" }}
-      >
-        <div className="flex items-center justify-between gap-2 border-b border-neutral-200/60 dark:border-neutral-700/60 px-2 py-1">
-          <div className="flex items-center gap-2">
-            <button onClick={() => setPanelOpen((v) => !v)} title={panelOpen ? "Hide result" : "Show result"} className="inline-flex h-6 w-6 items-center justify-center rounded-md hover:bg-neutral-100 dark:hover:bg-neutral-700">{panelOpen ? "<" : ">"}</button>
-            {panelOpen && <span className="text-xs text-neutral-500">Results</span>}
-          </div>
-          {panelOpen && (
-            <div className="flex items-center gap-2">
-              <button onClick={() => setResult("")} className="rounded-md border px-2 py-0.5 text-xs hover:bg-neutral-50 dark:hover:bg-neutral-700">Clear</button>
+        {/* Right Dock: Tabs(我的工具 / 结果)，可水平伸缩 */}
+        <div
+            className={`pointer-events-auto absolute right-4 top-4 z-10 max-h-[72vh] rounded-2xl shadow-md backdrop-blur transition-all duration-200 ${
+                dockOpen ? "bg-white/90 dark:bg-neutral-800/80" : "bg-white/70 dark:bg-neutral-800/60"
+            }`}
+            style={{
+                width: dockOpen ? "520px" : "44px",
+                resize: dockOpen ? "horizontal" as const : "none",
+                overflow: dockOpen ? "auto" : "hidden"
+            }}
+        >
+            {/* Dock Header */}
+            <div className="flex items-center justify-between gap-2 border-b border-neutral-200/60 dark:border-neutral-700/60 px-2 py-1">
+                <div className="flex items-center gap-2">
+                    <button
+                        onClick={() => setDockOpen(v => !v)}
+                        title={dockOpen ? "Hide dock" : "Show dock"}
+                        className="inline-flex h-6 w-6 items-center justify-center rounded-md hover:bg-neutral-100 dark:hover:bg-neutral-700"
+                    >
+                        {dockOpen ? "<" : ">"}
+                    </button>
+                    {dockOpen && (
+                        <div className="flex items-center gap-2">
+                            <button
+                                className={`text-xs rounded-md px-2 py-1 ${rightTab === 'tools' ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-black' : 'hover:bg-neutral-100 dark:hover:bg-neutral-700'}`}
+                                onClick={() => { setRightTab('tools'); refreshTools(); }}
+                            >
+                                我的工具
+                            </button>
+                            <button
+                                className={`text-xs rounded-md px-2 py-1 ${rightTab === 'results' ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-black' : 'hover:bg-neutral-100 dark:hover:bg-neutral-700'}`}
+                                onClick={() => setRightTab('results')}
+                            >
+                                结果
+                            </button>
+                        </div>
+                    )}
+                </div>
+
+                {dockOpen && rightTab === 'results' && (
+                    <div className="flex items-center gap-2">
+                        <button
+                            onClick={() => setResult("")}
+                            className="rounded-md border px-2 py-0.5 text-xs hover:bg-neutral-50 dark:hover:bg-neutral-700"
+                        >
+                            Clear
+                        </button>
+                    </div>
+                )}
+
+                {dockOpen && rightTab === 'tools' && (
+                    <div className="flex items-center gap-2">
+                        <button
+                            onClick={refreshTools}
+                            className="rounded-md border px-2 py-0.5 text-xs hover:bg-neutral-50 dark:hover:bg-neutral-700"
+                        >
+                            刷新
+                        </button>
+                    </div>
+                )}
             </div>
-          )}
+
+            {/* Dock Body */}
+            {dockOpen && rightTab === 'results' && (
+                <pre className="max-h-[64vh] w-full overflow-auto p-3 text-xs">{result || "(No result yet)"}</pre>
+            )}
+
+            {dockOpen && rightTab === 'tools' && (
+                <div className="max-h-[64vh] overflow-auto p-2 pr-3">
+                    {myTools.length === 0 ? (
+                        <div className="text-[11px] text-neutral-500 p-2">
+                            暂无工具。先在画布里保存一个（Menu → Save as Client Tool）。
+                        </div>
+                    ) : (
+                        <div className="space-y-2">
+                            {myTools.map((t) => (
+                                <div
+                                    key={t.id}
+                                    className="flex items-center justify-between gap-2 rounded-lg border px-2 py-1 text-xs hover:bg-neutral-50 dark:hover:bg-neutral-700"
+                                >
+                                    <div className="min-w-0">
+                                        <div className="truncate font-medium">{t.meta?.name || t.id}</div>
+                                        {t.meta?.description && (
+                                            <div className="truncate text-[11px] opacity-70">{t.meta.description}</div>
+                                        )}
+                                    </div>
+                                    <div className="shrink-0 flex items-center gap-2">
+                                        {/* 需要的话这里可以再加导出/复制 manifest 的按钮 */}
+                                        <button
+                                            className="text-[11px] px-2 py-1 rounded border border-red-400 text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20"
+                                            onClick={() => {
+                                                if (!t.id) return;
+                                                if (!confirm(`确定删除工具「${t.meta?.name || t.id}」？`)) return;
+                                                removeTool(t.id);
+                                                refreshTools();
+                                            }}
+                                        >
+                                            删除
+                                        </button>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
+            )}
         </div>
-        {panelOpen && (
-          <pre className="max-h-[52vh] w-full overflow-auto p-3 text-xs">{result || "(No result yet)"}</pre>
-        )}
-      </div>
+
     </div>
   );
 }
