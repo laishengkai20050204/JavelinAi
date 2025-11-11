@@ -67,20 +67,14 @@ async function runFromEntry(
 ): Promise<RunResult> {
     const ids = idMap(editor);
     const prevGetVar = Hooks.getVar;
+    // 原来：Hooks.getVar = (name: string) => ctx.vars[name];
     Hooks.getVar = (name: string) => {
         const key = String(name ?? "");
-        // 先支持扁平键（兼容以前的用法）
         if (Object.prototype.hasOwnProperty.call(ctx.vars, key)) return ctx.vars[key];
-        // 再支持 a.b.c 形式
         if (!key) return undefined;
-        const parts = key.split(".");
-        let cur: any = ctx.vars;
-        for (const p of parts) {
-            if (cur && typeof cur === "object" && p in cur) cur = cur[p];
-            else return undefined;
-        }
-        return cur;
+        return key.split(".").reduce((acc: any, k: string) => (acc == null ? undefined : acc[k]), ctx.vars);
     };
+
 
     await (engine as any)?.reset?.();
 
@@ -124,15 +118,19 @@ async function runFromEntry(
             const rt = getRuntime(typeOrLabel);
             if (rt) {
                 const api = {
-                    editor, engine,
-                    ctx,
+                    editor, engine, ctx,
                     readInput: (id: any, port: string) => readInput(editor, engine, id, port),
                     readControl: (n: any, name: string) => readControl(n, name),
                     nextBy: (id: any, port: string) => nextBy(editor, id, port),
                     invalidate,
                     setCache: (id: any, v: any) => OutputCache.set(id, v),
                     getCache: (id: any) => OutputCache.get(id),
+
+                    // 新增 ↓↓↓
+                    vars: ctx.vars,
+                    getVar: (path: string) => Hooks.getVar?.(path),
                 };
+
                 const res: any = await rt(api as any, node);
                 cur = res?.next ?? nextBy(editor, node.id, "next");
                 if (!advanceOrLoop()) break;
@@ -384,19 +382,31 @@ async function runFromEntry(
 }
 
 
-export async function runFromStart(editor: NodeEditor<Schemes>, engine: Engine) {
-    const ids = idMap(editor);
+// 之前：export async function runFromStart(editor: NodeEditor<Schemes>, engine: Engine) {
+export async function runFromStart(
+    editor: NodeEditor<Schemes>,
+    engine: Engine,
+    opts?: { initialVars?: Record<string, any>; vars?: Record<string, any>; context?: Record<string, any> }
+) {
     const starts = editor.getNodes().filter((n: any) => n.label === "Start");
     if (starts.length === 0) throw new Error("没有 Start 节点");
     const start = starts[0] as StartNode;
 
-    const ctx: RunCtx = { vars: Object.create(null) as Record<string, any>, logs: [] as any[] };
+    const seed =
+        (opts?.initialVars ?? opts?.vars ?? opts?.context ?? {}) as Record<string, any>;
+
+    const ctx: RunCtx = {
+        vars: Object.assign(Object.create(null), seed),
+        logs: [] as any[],
+    };
 
     const entry = nextBy(editor, start.id, "next");
     if (entry === undefined) {
         return { ok: true, logs: ctx.logs, vars: ctx.vars };
     }
 
+    // 传下去跑
     const res = await runFromEntry(editor, engine, entry, ctx, { allowReturn: false });
     return res;
 }
+
