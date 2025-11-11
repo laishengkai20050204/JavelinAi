@@ -1,7 +1,7 @@
 // apps/frontend/src/features/toolflow/core/runner.ts
-import type { NodeEditor } from "rete";
-import type { Schemes } from "../nodes/basic";
-import { getRuntime } from "../core/nodeRegistry";
+import type {NodeEditor} from "rete";
+import type {Schemes} from "../nodes/basic";
+import {getRuntime} from "../core/nodeRegistry";
 import {
     Engine,
     controlSocket,
@@ -55,6 +55,20 @@ function nextBy(editor: NodeEditor<Schemes>, fromId: any, port: string) {
     return ctrl ? ctrl.target : undefined;
 }
 
+
+// 新增：拿到同一“控制流端口”的**所有**目标（稳定排序）
+function nextTargets(editor: NodeEditor<Schemes>, fromId: any, port: string): any[] {
+    const conns = editor.getConnections().filter((c) => c.source === fromId && c.sourceOutput === port);
+    const ctrls = conns.filter((c) => isControlConn(editor, c)).sort((a: any, b: any) => String(a.id).localeCompare(String(b.id)));
+    return ctrls.map((c) => c.target);
+}
+
+// 新增：深拷贝 vars（优先用 structuredClone）
+function cloneVars<T>(obj: T): T {
+    // @ts-ignore
+    return (typeof structuredClone === "function") ? structuredClone(obj) : JSON.parse(JSON.stringify(obj));
+}
+
 type RunCtx = { vars: Record<string, any>; logs: any[] };
 type RunResult = { ok: boolean; logs: any[]; vars: Record<string, any>; returnValue?: any };
 
@@ -88,7 +102,7 @@ async function runFromEntry(
         const hasNamed = Object.keys(collectedNamed).length > 0;
         if (hasNamed) {
             // 可选：把未命名的也带上（方便调试）
-            return { ...collectedNamed, __list__: collectedList };
+            return {...collectedNamed, __list__: collectedList};
         }
         return collectedList.length <= 1 ? (collectedList[0] ?? null) : collectedList;
     };
@@ -97,10 +111,14 @@ async function runFromEntry(
     try {
         let cur: any = entryId;
         let guard = 0;
-        const invalidate = async () => { await (engine as any)?.reset?.(); };
+        const invalidate = async () => {
+            await (engine as any)?.reset?.();
+        };
         const loopStack: any[] = [];
         const advanceOrLoop = () => {
-            if (cur !== undefined) { return true; }
+            if (cur !== undefined) {
+                return true;
+            }
             const loopNodeId = loopStack[loopStack.length - 1];
             if (loopNodeId !== undefined) {
                 cur = loopNodeId;
@@ -109,8 +127,39 @@ async function runFromEntry(
             return false;
         };
 
+        // 新增：统一做“多分支并发推进”
+        const branchFrom = async (fromNodeId: any): Promise<boolean> => {
+            const targets = nextTargets(editor, fromNodeId, "next");
+            if (targets.length === 0) return false;
+            if (targets.length === 1) {
+                cur = targets[0];
+                return advanceOrLoop();
+            }
+            // 多条分支：并发执行，每条分支克隆各自的 vars
+            const parentVars = ctx.vars ?? {};
+            const tasks = targets.map(async (tid) => {
+                const childCtx: RunCtx = {vars: cloneVars(parentVars), logs: []};
+                try {
+                    const sub = await runFromEntry(editor, engine, tid, childCtx, {allowReturn: false});
+                    // 也可以把子分支日志并回父日志（打上 tag）
+                    ctx.logs.push(...sub.logs.map((x: any) => ({...x, branchFrom: String(fromNodeId)})));
+                } catch (e: any) {
+                    ctx.logs.push({
+                        type: "branch_error",
+                        from: String(fromNodeId),
+                        to: String(tid),
+                        error: String(e?.message ?? e)
+                    });
+                }
+            });
+            await Promise.allSettled(tasks);
+            // 分叉后本路径结束（无隐式 join）
+            return false;
+        };
+
         while (cur !== undefined) {
-            guard++; if (guard > 5000) throw new Error("执行步数过多，可能出现死循环");
+            guard++;
+            if (guard > 5000) throw new Error("执行步数过多，可能出现死循环");
             const node = ids.get(cur);
 
             // runtime 分发（你之前的那段）
@@ -131,9 +180,9 @@ async function runFromEntry(
                     getVar: (path: string) => Hooks.getVar?.(path),
                 };
 
-                const res: any = await rt(api as any, node);
-                cur = res?.next ?? nextBy(editor, node.id, "next");
-                if (!advanceOrLoop()) break;
+                await rt(api as any, node); // 仅执行副作用/缓存
+                const ok = await branchFrom(node.id);
+                if (!ok) break;
                 continue;
             }
 
@@ -141,9 +190,11 @@ async function runFromEntry(
             if (node instanceof IfNode) {
                 const d: any = await engine.fetch(node.id as any);
                 const cond = !!d?.cond;
-                ctx.logs.push({ type: "branch", node: String(node.id), path: cond ? "then" : "else" });
+                ctx.logs.push({type: "branch", node: String(node.id), path: cond ? "then" : "else"});
                 cur = nextBy(editor, node.id, cond ? "then" : "else");
-                if (!advanceOrLoop()) { break; }
+                if (!advanceOrLoop()) {
+                    break;
+                }
                 continue;
             }
 
@@ -152,36 +203,52 @@ async function runFromEntry(
                 await invalidate();
                 const d: any = await engine.fetch(node.id as any);
                 const cond = !!d?.cond;
+
                 if (cond) {
-                    ctx.logs.push({ type: "loop", node: String(node.id), action: "enter" });
+                    ctx.logs.push({type: "loop", node: String(node.id), action: "enter"});
                     if (loopStack[loopStack.length - 1] !== node.id) {
                         loopStack.push(node.id);
                     }
                     const bodyEntry = nextBy(editor, node.id, "body");
                     if (bodyEntry === undefined) {
+                        // 没有 body，直接下一轮判断
                         continue;
                     }
                     cur = bodyEntry;
+                    if (!advanceOrLoop()) break;
+                    continue; // ← 在 cond=true 分支里就结束本轮
                 } else {
-                    ctx.logs.push({ type: "loop", node: String(node.id), action: "exit" });
+                    ctx.logs.push({type: "loop", node: String(node.id), action: "exit"});
                     if (loopStack[loopStack.length - 1] === node.id) {
                         loopStack.pop();
                     }
-                    cur = nextBy(editor, node.id, "next");
+                    // 退出 while：沿 next 口推进（可能多分支并发）
+                    const ok = await branchFrom(node.id);
+                    if (!ok) break;
+                    continue; // ← 在 cond=false 分支里也结束本轮
                 }
-                if (!advanceOrLoop()) { break; }
-                continue;
             }
+
 
             // SetVar
             if (node instanceof SetVarNode) {
                 const d: any = await engine.fetch(node.id as any);
                 const name = d?.name ?? "x";
-                ctx.vars[name] = d?.value;
-                ctx.logs.push({ type: "setvar", name, value: d?.value });
+                // 点号路径写入 a.b.c
+                const parts = String(name).split(".");
+                let cur = ctx.vars;
+                for (let i = 0; i < parts.length - 1; i++) {
+                    const k = parts[i];
+                    // 若中间层不存在或不是对象，则建一个空对象占位
+                    if (!cur[k] || typeof cur[k] !== "object") cur[k] = {};
+                    cur = cur[k];
+                }
+                cur[parts[parts.length - 1]] = d?.value;
+
+                ctx.logs.push({type: "setvar", name, value: d?.value});
                 await invalidate();
-                cur = nextBy(editor, node.id, "next");
-                if (!advanceOrLoop()) { break; }
+                const ok = await branchFrom(node.id);
+                if (!ok) break;
                 continue;
             }
 
@@ -196,6 +263,13 @@ async function runFromEntry(
                 const headers: Record<string, string> =
                     (headersIn && typeof headersIn === "object") ? headersIn : {};
 
+                const cred = String(readControl(node, "credentials") ?? "same-origin");
+                const init: RequestInit = {method, headers};
+                if (cred === "include" || cred === "omit" || cred === "same-origin") {
+                    (init as any).credentials = cred as RequestCredentials;
+                }
+
+
                 let status = 0, outHeaders: Record<string, string> = {}, body: any = null;
                 try {
                     if (Hooks.httpFetch) {
@@ -203,9 +277,11 @@ async function runFromEntry(
                             method, url, headers, body: bodyIn,
                             responseType: respType === "text" ? "text" : "json"
                         });
-                        status = r.status; outHeaders = r.headers || {}; body = r.body;
+                        status = r.status;
+                        outHeaders = r.headers || {};
+                        body = r.body;
                     } else {
-                        const init: RequestInit = { method, headers };
+
                         if (bodyIn !== undefined && method !== "GET") {
                             const hasCT = Object.keys(headers).some(k => k.toLowerCase() === "content-type");
                             init.body = (typeof bodyIn === "string" || bodyIn instanceof Blob)
@@ -221,13 +297,14 @@ async function runFromEntry(
                         body = (respType === "text") ? await res.text() : await res.json().catch(() => null);
                     }
                 } catch (e: any) {
-                    status = -1; body = { error: e?.message || String(e) };
+                    status = -1;
+                    body = {error: e?.message || String(e)};
                 }
 
-                OutputCache.set(node.id, { status, headers: outHeaders, body });
+                OutputCache.set(node.id, {status, headers: outHeaders, body});
                 await invalidate();
-                cur = nextBy(editor, node.id, "next");
-                if (!advanceOrLoop()) { break; }
+                const ok = await branchFrom(node.id);
+                if (!ok) break;
                 continue;
             }
 
@@ -237,14 +314,14 @@ async function runFromEntry(
                 const [args] = await readInput(editor, engine, node.id, "args");
                 let result: any = null;
                 try {
-                    result = Hooks.callTool ? await Hooks.callTool(name, args) : { tool: name, args };
+                    result = Hooks.callTool ? await Hooks.callTool(name, args) : {tool: name, args};
                 } catch (e: any) {
-                    result = { error: e?.message || String(e) };
+                    result = {error: e?.message || String(e)};
                 }
-                OutputCache.set(node.id, { result });
+                OutputCache.set(node.id, {result});
                 await invalidate();
-                cur = nextBy(editor, node.id, "next");
-                if (!advanceOrLoop()) { break; }
+                const ok = await branchFrom(node.id);
+                if (!ok) break;
                 continue;
             }
 
@@ -261,11 +338,11 @@ async function runFromEntry(
                 );
 
                 if (!def) {
-                    ctx.logs.push({ type: "error", node: String(node.id), message: `Function not found: ${fnName}` });
-                    OutputCache.set(node.id, { result: null });
+                    ctx.logs.push({type: "error", node: String(node.id), message: `Function not found: ${fnName}`});
+                    OutputCache.set(node.id, {result: null});
                     await invalidate();
-                    cur = nextBy(editor, node.id, "next");
-                    if (!advanceOrLoop()) { break; }
+                    const ok = await branchFrom(node.id);
+                    if (!ok) break;
                     continue;
                 }
 
@@ -285,24 +362,24 @@ async function runFromEntry(
                     }
                 }
 
-                ctx.logs.push({ type: "fn_enter", node: String(node.id), name: fnName });
+                ctx.logs.push({type: "fn_enter", node: String(node.id), name: fnName});
 
                 const bodyEntry = nextBy(editor, def.id, "body");
                 let retValue: any = undefined;
                 if (bodyEntry !== undefined) {
-                    const sub = await runFromEntry(editor, engine, bodyEntry, localCtx, { allowReturn: true });
+                    const sub = await runFromEntry(editor, engine, bodyEntry, localCtx, {allowReturn: true});
                     retValue = sub.returnValue;
                     // 合并函数内部日志（打标记 fn）
-                    ctx.logs.push(...sub.logs.map((x: any) => ({ ...x, fn: fnName })));
+                    ctx.logs.push(...sub.logs.map((x: any) => ({...x, fn: fnName})));
                 }
 
-                ctx.logs.push({ type: "fn_exit", node: String(node.id), name: fnName, value: retValue });
+                ctx.logs.push({type: "fn_exit", node: String(node.id), name: fnName, value: retValue});
 
-                OutputCache.set(node.id, { result: retValue });
+                OutputCache.set(node.id, {result: retValue});
                 await invalidate();
 
-                cur = nextBy(editor, node.id, "next");
-                if (!advanceOrLoop()) { break; }
+                const ok = await branchFrom(node.id);
+                if (!ok) break;
                 continue;
             }
 
@@ -310,17 +387,22 @@ async function runFromEntry(
             if (options?.allowReturn && node instanceof FuncReturnNode) {
                 const d: any = await engine.fetch(node.id as any);
                 const value = d?.value;
-                ctx.logs.push({ type: "return", node: String(node.id), value });
-                return { ok: true, logs: ctx.logs, vars: ctx.vars, returnValue: value };
+                ctx.logs.push({type: "return", node: String(node.id), value});
+                return {ok: true, logs: ctx.logs, vars: ctx.vars, returnValue: value};
             }
 
             // Logger
             if (node instanceof LoggerNode) {
                 const d: any = await engine.fetch(node.id as any);
-                if (d?.text !== undefined) { console.log("[Logger]", d.text); ctx.logs.push({ type: "log", text: String(d.text) }); }
-                else { console.log("[Logger]", d?.json); ctx.logs.push({ type: "log", json: d?.json }); }
-                cur = nextBy(editor, node.id, "next");
-                if (!advanceOrLoop()) { break; }
+                if (d?.text !== undefined) {
+                    console.log("[Logger]", d.text);
+                    ctx.logs.push({type: "log", text: String(d.text)});
+                } else {
+                    console.log("[Logger]", d?.json);
+                    ctx.logs.push({type: "log", json: d?.json});
+                }
+                const ok = await branchFrom(node.id);
+                if (!ok) break;
                 continue;
             }
 
@@ -330,7 +412,7 @@ async function runFromEntry(
                 const value = d?.out ?? d?.text ?? null;
 
                 // 记录缓存，便于面板查看
-                OutputCache.set(node.id, { result: value });
+                OutputCache.set(node.id, {result: value});
                 await invalidate();
 
                 // 读取可选 name
@@ -340,28 +422,62 @@ async function runFromEntry(
                 hasCollected = true;
 
                 // 继续沿 next
-                const nxt = nextBy(editor, node.id, "next");
-                if (nxt !== undefined) { cur = nxt; if (!advanceOrLoop()) { /* break or continue */ } continue; }
+                const targets = nextTargets(editor, node.id, "next");
+                if (targets.length === 1) {
+                    cur = targets[0];
+                    continue;
+                }
+                if (targets.length > 1) {
+                    await Promise.allSettled(targets.map((tid) => {
+                        const childCtx: RunCtx = {vars: cloneVars(ctx.vars ?? {}), logs: []};
+                        return runFromEntry(editor, engine, tid, childCtx, {allowReturn: false}).catch((e: any) => {
+                            ctx.logs.push({
+                                type: "branch_error",
+                                from: String(node.id),
+                                to: String(tid),
+                                error: String(e?.message ?? e)
+                            });
+                        });
+                    }));
+                    break; // 分叉后本路径结束
+                }
 
                 // 没有 next 就让调度逻辑去找其它控制口/结束
             }
 
 
-
             // End
             if (node instanceof EndNode) {
-                ctx.logs.push({ type: "end", node: String(node.id) });
+                ctx.logs.push({type: "end", node: String(node.id)});
                 break;
             }
 
-            // 其它节点：尝试 next 控制口推进
-            const nxt = nextBy(editor, node.id, "next");
-            if (nxt !== undefined) { cur = nxt; continue; }
-
+            const targets = nextTargets(editor, node.id, "next");
+            if (targets.length === 1) {
+                cur = targets[0];
+                continue;
+            }
+            if (targets.length > 1) {
+                await Promise.allSettled(targets.map((tid) => {
+                    const childCtx: RunCtx = {vars: cloneVars(ctx.vars ?? {}), logs: []};
+                    return runFromEntry(editor, engine, tid, childCtx, {allowReturn: false}).catch((e: any) => {
+                        ctx.logs.push({
+                            type: "branch_error",
+                            from: String(node.id),
+                            to: String(tid),
+                            error: String(e?.message ?? e)
+                        });
+                    });
+                }));
+                break; // 分叉后本路径结束（无隐式 join）
+            }
             // 或任何控制输出
             const cons = editor.getConnections().filter((c) => c.source === node.id);
             const ctrl = cons.find((c) => isControlConn(editor, c));
-            if (ctrl) { cur = ctrl.target; continue; }
+            if (ctrl) {
+                cur = ctrl.target;
+                continue;
+            }
 
             if (loopStack.length) {
                 const loopNodeId = loopStack[loopStack.length - 1];
@@ -374,8 +490,8 @@ async function runFromEntry(
 
         const rv = finalizeReturn();
         return rv === undefined
-            ? { ok: true, logs: ctx.logs, vars: ctx.vars }
-            : { ok: true, logs: ctx.logs, vars: ctx.vars, returnValue: rv };
+            ? {ok: true, logs: ctx.logs, vars: ctx.vars}
+            : {ok: true, logs: ctx.logs, vars: ctx.vars, returnValue: rv};
     } finally {
         Hooks.getVar = prevGetVar;
     }
@@ -400,13 +516,33 @@ export async function runFromStart(
         logs: [] as any[],
     };
 
-    const entry = nextBy(editor, start.id, "next");
-    if (entry === undefined) {
-        return { ok: true, logs: ctx.logs, vars: ctx.vars };
+    const targets = nextTargets(editor, start.id, "next");
+    if (targets.length === 0) {
+        return {ok: true, logs: ctx.logs, vars: ctx.vars};
+    }
+    if (targets.length === 1) {
+        return await runFromEntry(editor, engine, targets[0], ctx, {allowReturn: false});
     }
 
-    // 传下去跑
-    const res = await runFromEntry(editor, engine, entry, ctx, { allowReturn: false });
-    return res;
+    // 多入口：并发跑每条分支，vars 各自拷贝，日志合并回父级
+    await Promise.allSettled(
+        targets.map(async (tid) => {
+            const childCtx: RunCtx = {vars: cloneVars(ctx.vars ?? {}), logs: []};
+            try {
+                const r = await runFromEntry(editor, engine, tid, childCtx, {allowReturn: false});
+                ctx.logs.push(...r.logs.map((x: any) => ({...x, branchFrom: String(start.id)})));
+            } catch (e: any) {
+                ctx.logs.push({
+                    type: "branch_error",
+                    from: String(start.id),
+                    to: String(tid),
+                    error: String(e?.message ?? e)
+                });
+            }
+        })
+    );
+
+    // 分叉后没有隐式 join，这里直接返回父 ctx（vars 不合并）
+    return {ok: true, logs: ctx.logs, vars: ctx.vars};
 }
 

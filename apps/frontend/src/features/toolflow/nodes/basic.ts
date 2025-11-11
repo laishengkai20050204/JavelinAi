@@ -168,26 +168,6 @@ registerNode({
     create: () => new BooleanNode()
 });
 
-export class AddNode extends ClassicPreset.Node {
-    constructor() {
-        super("Add");
-        this.addInput("a", new ClassicPreset.Input(numberSocket, "a"));
-        this.addInput("b", new ClassicPreset.Input(numberSocket, "b"));
-        this.addOutput("out", new ClassicPreset.Output(numberSocket, "out"));
-    }
-    data(inputs: { a?: any[]; b?: any[] }) {
-        const a = Number(inputs.a?.[0] ?? 0);
-        const b = Number(inputs.b?.[0] ?? 0);
-        return { out: a + b };
-    }
-}
-registerNode({
-    type: "Add",
-    title: "Add",
-    category: "logic",
-    create: () => new AddNode()
-});
-
 export class PromptNode extends ClassicPreset.Node {
     constructor() {
         super("Prompt");
@@ -348,6 +328,8 @@ export class HttpFetchNode extends ClassicPreset.Node {
         this.addInput("in", new ClassicPreset.Input(controlSocket, "in"));
         this.addControl("method", new ClassicPreset.InputControl("text", { initial: "GET" }));
         this.addControl("url", new ClassicPreset.InputControl("text", { initial: "https://httpbin.org/get" }));
+        // 允许值：same-origin / include / omit
+        this.addControl("credentials", new ClassicPreset.InputControl("text", { initial: "same-origin" }));
         this.addInput("headers", new ClassicPreset.Input(jsonSocket, "headers"));
         this.addInput("body", new ClassicPreset.Input(jsonSocket, "body"));
         this.addControl("respType", new ClassicPreset.InputControl("text", { initial: "json" }));
@@ -465,7 +447,7 @@ export type NodeU =
     | StartNode | EndNode
     | IfNode | WhileNode
     | NumberNode | StringNode | BooleanNode
-    | AddNode | PromptNode
+    | PromptNode
     | LoggerNode | OutputNode
     | SetVarNode | GetVarNode
     | JsonParseNode | JsonStringifyNode
