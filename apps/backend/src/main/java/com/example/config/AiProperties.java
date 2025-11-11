@@ -59,7 +59,7 @@ public class AiProperties {
     @Data
     public static class Memory {
         private String storage = "in-memory";
-        private int maxMessages = 12;
+        private int maxMessages = 100;
         private String persistenceMode = "draft-and-final";
         private boolean promoteDraftsOnFinish = true;
     }

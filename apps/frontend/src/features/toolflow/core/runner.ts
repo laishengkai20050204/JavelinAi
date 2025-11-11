@@ -67,9 +67,38 @@ async function runFromEntry(
 ): Promise<RunResult> {
     const ids = idMap(editor);
     const prevGetVar = Hooks.getVar;
-    Hooks.getVar = (name: string) => ctx.vars[name];
+    Hooks.getVar = (name: string) => {
+        const key = String(name ?? "");
+        // 先支持扁平键（兼容以前的用法）
+        if (Object.prototype.hasOwnProperty.call(ctx.vars, key)) return ctx.vars[key];
+        // 再支持 a.b.c 形式
+        if (!key) return undefined;
+        const parts = key.split(".");
+        let cur: any = ctx.vars;
+        for (const p of parts) {
+            if (cur && typeof cur === "object" && p in cur) cur = cur[p];
+            else return undefined;
+        }
+        return cur;
+    };
 
     await (engine as any)?.reset?.();
+
+    // 在 runFromEntry 内部，try 之前或刚进入 try 之后：
+    const collectedList: any[] = [];
+    const collectedNamed: Record<string, any> = {};
+    let hasCollected = false;
+
+    const finalizeReturn = () => {
+        if (!hasCollected) return undefined;
+        const hasNamed = Object.keys(collectedNamed).length > 0;
+        if (hasNamed) {
+            // 可选：把未命名的也带上（方便调试）
+            return { ...collectedNamed, __list__: collectedList };
+        }
+        return collectedList.length <= 1 ? (collectedList[0] ?? null) : collectedList;
+    };
+
 
     try {
         let cur: any = entryId;
@@ -297,6 +326,30 @@ async function runFromEntry(
                 continue;
             }
 
+// Output —— 聚合输出，但不立刻 return；让流程继续到 End / 终止点
+            if ((node as any)?.label === "Output") {
+                const d: any = await engine.fetch(node.id as any);
+                const value = d?.out ?? d?.text ?? null;
+
+                // 记录缓存，便于面板查看
+                OutputCache.set(node.id, { result: value });
+                await invalidate();
+
+                // 读取可选 name
+                const key = String(readControl(node, "name") ?? "").trim();
+                if (key) collectedNamed[key] = value;
+                else collectedList.push(value);
+                hasCollected = true;
+
+                // 继续沿 next
+                const nxt = nextBy(editor, node.id, "next");
+                if (nxt !== undefined) { cur = nxt; if (!advanceOrLoop()) { /* break or continue */ } continue; }
+
+                // 没有 next 就让调度逻辑去找其它控制口/结束
+            }
+
+
+
             // End
             if (node instanceof EndNode) {
                 ctx.logs.push({ type: "end", node: String(node.id) });
@@ -321,7 +374,10 @@ async function runFromEntry(
             break;
         }
 
-        return { ok: true, logs: ctx.logs, vars: ctx.vars };
+        const rv = finalizeReturn();
+        return rv === undefined
+            ? { ok: true, logs: ctx.logs, vars: ctx.vars }
+            : { ok: true, logs: ctx.logs, vars: ctx.vars, returnValue: rv };
     } finally {
         Hooks.getVar = prevGetVar;
     }

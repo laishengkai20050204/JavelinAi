@@ -5,6 +5,7 @@ import { listSavedTools } from "../features/clientTools/storage";
 import { compileGraphToClientTool } from "../features/clientTools/compile";
 import type { ClientTool } from "../features/clientTools/types";
 import SafeMarkdown from "../components/SafeMarkdown";
+type PendingLink = { url: string; target: "_self" | "_blank"; ts: number };
 import {
     Bot,
     Send,
@@ -312,6 +313,43 @@ export default function JavelinMinimalChat() {
     // 工具管理
     const [toolPanelOpen, setToolPanelOpen] = useState(true);
     const [exposed, setExposed] = useState<Record<string, boolean>>({});
+
+    // === 多链接待打开队列 ===
+    type PendingLinkItem = PendingLink & { id: string };
+    const [pendingLinks, setPendingLinks] = React.useState<PendingLinkItem[]>([]);
+
+    React.useEffect(() => {
+        const onEvt = (e: Event) => {
+            const d = (e as CustomEvent).detail as PendingLink;
+            const id = (crypto as any)?.randomUUID?.() ?? String(Date.now()) + Math.random();
+            setPendingLinks(prev => {
+                // 防抖去重：5s 内同 (url+target) 不重复入队
+                const dup = prev.some(x => x.url === d.url && x.target === d.target && (d.ts - x.ts) < 5000);
+                return dup ? prev : [...prev, { ...d, id }];
+            });
+            console.log("[UI] pending open-url:", d);
+        };
+        window.addEventListener("javelin:pending-open-url", onEvt as EventListener);
+        return () => window.removeEventListener("javelin:pending-open-url", onEvt as EventListener);
+    }, []);
+
+    // 打开单个（保留它自己的 target；如果你也不想跳走，可以同样强制 _blank）
+    function openOne(id: string) {
+        setPendingLinks(prev => {
+            const it = prev.find(x => x.id === id);
+            if (!it) return prev;
+            const target = it.target || "_blank";
+            const w = window.open(it.url, target, "noopener");
+            if (w) {
+                // 打开成功就从队列移除
+                return prev.filter(x => x.id !== id);
+            }
+            // 仍被拦截则保留
+            return prev;
+        });
+    }
+
+
 
 
     const abortRef = useRef<AbortController | null>(null);
@@ -1337,6 +1375,52 @@ export default function JavelinMinimalChat() {
                 }}
                 onCancel={() => setRenameId(null)}
             />
+            {/* Pending links queue */}
+            {pendingLinks.length > 0 && (
+                <div className="fixed bottom-4 right-4 z-50 w-[22rem] max-w-[92vw] rounded-xl shadow-lg bg-white border p-3">
+                    <div className="flex items-center justify-between mb-2">
+                        <div className="text-sm font-medium">选择要打开的链接（{pendingLinks.length}）</div>
+                        <div className="flex items-center gap-2">
+                            <button
+                                onClick={() => setPendingLinks([])}
+                                className="px-2 py-1 text-xs rounded-lg border hover:bg-gray-50"
+                            >
+                                清空
+                            </button>
+                        </div>
+                    </div>
+
+                    <div className="max-h-56 overflow-auto space-y-2">
+                        {pendingLinks.map(it => (
+                            <div key={it.id} className="flex items-center gap-2">
+                                <div className="flex-1 min-w-0 text-xs">
+                                    <div className="font-mono truncate">
+                                        {(() => { try { return new URL(it.url).host; } catch { return it.url; } })()}
+                                    </div>
+                                    <div className="opacity-60 truncate">{it.url}</div>
+                                </div>
+                                <button
+                                    onMouseDown={(e) => { e.preventDefault(); openOne(it.id); }}
+                                    className="px-2 py-1 text-xs rounded-lg bg-black text-white hover:opacity-90"
+                                    title="打开此链接"
+                                >
+                                    打开
+                                </button>
+
+                                <button
+                                    onClick={() => setPendingLinks(prev => prev.filter(x => x.id !== it.id))}
+                                    className="px-2 py-1 text-xs rounded-lg border hover:bg-gray-50"
+                                    title="移除"
+                                >
+                                    ×
+                                </button>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
+
+
         </div>
     );
 }

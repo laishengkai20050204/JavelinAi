@@ -3,16 +3,13 @@
   "model" : "deepseek-chat",
   "toolsMaxLoops" : 10,
   "toolToggles" : {
-    "find_relevant_memory" : false,
-    "web_search" : false,
-    "web_fetch" : false,
+    "debug_tool" : false,
     "get_server_time" : false,
-    "python_exec" : false,
-    "debug_tool" : false
+    "find_relevant_memory" : false
   },
   "baseUrl" : "https://api.deepseek.com",
   "apiKey" : "sk-f7b984ec955240a2a81f341792191927",
   "clientTimeoutMs" : 180000,
   "streamTimeoutMs" : 240000,
-  "memoryMaxMessages" : 12
+  "memoryMaxMessages" : 100
 }

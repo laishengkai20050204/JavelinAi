@@ -29,6 +29,8 @@ import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
+import org.springframework.web.reactive.function.client.WebClientResponseException;
+import reactor.core.Exceptions;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
@@ -64,33 +66,37 @@ public class SpringAiChatGateway {
     private String executeCall(Map<String, Object> payload, AiProperties.Mode mode) {
         Prompt prompt = toPrompt(payload, mode);
 
-        // 请求预览（日�?+ 对象�?
+        // 请求预览（你已有）
         ObjectNode reqPreview = logOutgoingPayloadJson(prompt, payload, mode);
 
-        // 调模�?
-        ChatResponse response = chatModel.call(prompt);
+        try {
+            // 调模型
+            ChatResponse response = chatModel.call(prompt);
 
-        // 响应元信�?+ 决策日志
-        if (log.isDebugEnabled()) {
-            logIncomingRawJson(response);      // usage / rate limit �?
-            logAssistantDecision(response);    // �?tool_calls 打出�?
+            if (log.isDebugEnabled()) {
+                logIncomingRawJson(response);
+                logAssistantDecision(response);
+            }
+
+            String out = formatResponse(response, mode);
+
+            if (log.isDebugEnabled()) {
+                try {
+                    ObjectNode root = (ObjectNode) mapper.readTree(out);
+                    root.set("_provider_request", reqPreview);
+                    root.set("_provider_raw", mapper.valueToTree(extractProviderRaw(response)));
+                    root.set("_provider_assistant", buildAssistantDecisionNode(response));
+                    out = mapper.writeValueAsString(root);
+                } catch (Exception ignore) {}
+            }
+            return out;
+        } catch (Throwable e) {
+            // NEW: 打印 4xx/5xx 的响应体
+            logHttpError(e, reqPreview);
+            throw e; // 保持原有异常语义
         }
-
-        // 归一化为你现有的网关返回
-        String out = formatResponse(response, mode);
-
-        // （仅调试时）�?请求预览 / 原生元信�?/ 助手决策 一起塞�?JSON
-        if (log.isDebugEnabled()) {
-            try {
-                ObjectNode root = (ObjectNode) mapper.readTree(out);
-                root.set("_provider_request", reqPreview);
-                root.set("_provider_raw", mapper.valueToTree(extractProviderRaw(response)));
-                root.set("_provider_assistant", buildAssistantDecisionNode(response)); // �?就放这里
-                out = mapper.writeValueAsString(root);
-            } catch (Exception ignore) {}
-        }
-        return out;
     }
+
 
 
 
@@ -110,26 +116,17 @@ public class SpringAiChatGateway {
 
         return chatModel.stream(prompt)
                 .map(resp -> {
-                    // 转成你既有的 OpenAI 风格 chunk JSON
                     String chunk = formatStreamChunk(resp, mode);
-
-                    // 轻量（TRACE 级别）观察原始 chunk；量大，默认关着
-                    if (log.isTraceEnabled()) {
-                        log.trace("[AI-STREAM:chunk] {}", chunk);
-                    }
-
-                    // 3) 累积（只在 DEBUG 开关开着时做）
-                    if (log.isDebugEnabled()) {
-                        agg.acceptChunk(chunk);
-                    }
+                    if (log.isTraceEnabled()) log.trace("[AI-STREAM:chunk] {}", chunk);
+                    if (log.isDebugEnabled()) agg.acceptChunk(chunk);
                     return chunk;
                 })
-                .doOnError(e -> log.warn("[AI-STREAM:error] {}", e.toString()))
+                // NEW: 打 4xx 响应体
+                .doOnError(e -> logHttpError(e, reqPreview))
                 .doOnComplete(() -> {
-                    // 4) 完成时打一条“助手决策快照”日志（内容+工具调用），格式和 call() 的 [AI-RESP:MSG] 对齐
                     if (log.isDebugEnabled()) {
                         try {
-                            ObjectNode assistantSnap = agg.assistantNode(); // role/content/tool_calls
+                            ObjectNode assistantSnap = agg.assistantNode();
                             log.debug("[AI-RESP:MSG(stream)] {}", mapper
                                     .writerWithDefaultPrettyPrinter()
                                     .writeValueAsString(assistantSnap));
@@ -137,18 +134,8 @@ public class SpringAiChatGateway {
                             log.debug("[AI-RESP:MSG(stream)] <failed to serialize>: {}", ex.toString());
                         }
                     }
-                })
-                // 可选：在订阅时回显“请求预览”，方便串起请求-响应
-//                .doOnSubscribe(s -> {
-//                    if (log.isDebugEnabled()) {
-//                        try {
-//                            log.debug("[AI-REQ(stream)] {}", mapper
-//                                    .writerWithDefaultPrettyPrinter()
-//                                    .writeValueAsString(reqPreview));
-//                        } catch (Exception ignore) {}
-//                    }
-//                })
-                ;
+                });
+
     }
 
     // 累积流式 delta，完成时输出一个“助手决策快照”节点（role/content/tool_calls）
@@ -1007,6 +994,37 @@ public class SpringAiChatGateway {
         }
         String s = v.toString();
         return (s == null || s.isBlank()) ? null : s;
+    }
+
+    // NEW: 统一打印 4xx/5xx 的响应体 + 请求预览
+    private void logHttpError(Throwable e, @Nullable ObjectNode reqPreview) {
+        Throwable cause = Exceptions.unwrap(e);
+        if (cause instanceof WebClientResponseException ex) {
+            String body = null;
+            try { body = ex.getResponseBodyAsString(); } catch (Exception ignored) {}
+            String reqJson = "<unavailable>";
+            try {
+                if (reqPreview != null && reqPreview.size() > 0) {
+                    reqJson = mapper.writerWithDefaultPrettyPrinter().writeValueAsString(reqPreview);
+                }
+            } catch (Exception ignored) {}
+
+            log.warn(
+                    "\n[PROVIDER-HTTP-ERROR]\n" +
+                            "• status      : {}\n" +
+                            "• url/message : {}\n" +
+                            "• respHeaders : {}\n" +
+                            "• respBody    : {}\n" +
+                            "• reqPreview  : {}\n",
+                    ex.getStatusCode().value(),
+                    ex.getMessage(),                     // 内含 URL
+                    ex.getHeaders(),
+                    (body == null || body.isBlank() ? "<empty>" : body),
+                    reqJson
+            );
+        } else {
+            log.warn("[PROVIDER-ERROR] {}", e.toString());
+        }
     }
 
 

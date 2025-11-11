@@ -86,15 +86,15 @@ public class EffectiveProps {
     }
 
     /**
-     * 最终的记忆窗口大小（条数）。
-     * 优先取运行时覆盖；否则回退到静态配置 ai.memory.maxMessages（默认 12）。
+     * Effective memory window size (message count).
+     * Prefers runtime overrides; otherwise falls back to ai.memory.maxMessages (default 100).
      */
     public int memoryMaxMessages() {
         var r = rc();
         if (r != null && r.getMemoryMaxMessages() != null && r.getMemoryMaxMessages() > 0) {
             return r.getMemoryMaxMessages();
         }
-        int fallback = (statics.getMemory() != null ? statics.getMemory().getMaxMessages() : 12);
+        int fallback = (statics.getMemory() != null ? statics.getMemory().getMaxMessages() : 100);
         return Math.max(1, fallback);
     }
 

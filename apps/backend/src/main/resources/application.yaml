@@ -49,7 +49,7 @@ ai:
       denyNetwork: true
   memory:
     storage: database        # set to in-memory to use the in-memory implementation
-    max-messages: 12
+    max-messages: 100
     persistenceMode: draft-and-final   # draft-and-final | final-only
     promoteDraftsOnFinish: true        # promote step DRAFT rows to FINAL when finished
   client:

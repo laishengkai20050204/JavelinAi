@@ -1,56 +1,64 @@
 import { ClassicPreset } from "rete";
-import { controlSocket, jsonSocket, stringSocket, Hooks } from "../basic"; // ✅ 加入 Hooks
+import { controlSocket, jsonSocket, stringSocket, Hooks } from "../basic";
 import { registerNode } from "../../core/nodeRegistry";
 
-/**
- * OpenUrl
- * - 控制流：in -> 打开 URL -> next
- * - URL/target 的优先级：
- *   url:    urlIn(连线) > args.url > 控件(url)
- *   target: targetIn(连线) > args.target > 控件(target)
- */
+/** ---- 安全辅助 ---- **/
+const SAFE_SCHEMES = ["http:", "https:"] as const;
+function normalizeUrl(raw?: any): string | null {
+    let s = raw;
+    if (s && typeof s === "object") s = s.url ?? s.href ?? JSON.stringify(s);
+    s = String(s ?? "").trim();
+    if (!s) return null;
+
+    // 补协议
+    if (!/^[a-z]+:\/\//i.test(s)) s = "https://" + s.replace(/^\/+/, "");
+
+    try {
+        const u = new URL(s);
+        if (!SAFE_SCHEMES.includes(u.protocol as any)) return null;
+        return u.toString();
+    } catch {
+        return null;
+    }
+}
+function normalizeTarget(raw?: any): "_blank" | "_self" {
+    const s = String(raw ?? "").trim().toLowerCase();
+    return s === "self" || s === "_self" ? "_self" : "_blank";
+}
+
+// 短期去重：避免同 URL 连续多次打开
+let _lastOpen = { url: "", ts: 0 };
+const dedup = (url: string, ms = 800) => {
+    const now = Date.now();
+    if (_lastOpen.url === url && now - _lastOpen.ts < ms) return true;
+    _lastOpen = { url, ts: now };
+    return false;
+};
+
+// 事件派发（被拦截时由 UI 兜底）
+function emitPending(url: string, target: "_blank" | "_self") {
+    const payload = { url, target, ts: Date.now() };
+    (globalThis as any).__JAVELIN_PENDING_LINK__ = payload;
+    if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent("javelin:pending-open-url", { detail: payload } as any));
+    }
+}
+
 export class OpenUrlNode extends ClassicPreset.Node {
     constructor() {
         super("OpenUrl");
-
         // 控制流
         this.addInput("in", new ClassicPreset.Input(controlSocket, "in"));
         this.addOutput("next", new ClassicPreset.Output(controlSocket, "next"));
-
         // 数据输入
         this.addInput("urlIn", new ClassicPreset.Input(jsonSocket, "url"));
         this.addInput("targetIn", new ClassicPreset.Input(stringSocket, "target?"));
-
         // 控件
         this.addControl("url", new ClassicPreset.InputControl("text", { initial: "" }));
-        this.addControl("target", new ClassicPreset.InputControl("text", { initial: "new-tab" })); // 'new-tab' | 'self'
+        this.addControl("target", new ClassicPreset.InputControl("text", { initial: "new-tab" }));
     }
-    data() { return { next: 1 }; }
+    data() { return { next: 1 }; } // 只暴露控制流
 }
-
-function normalizeUrl(raw?: any): string | null {
-    let s = raw;
-    if (s && typeof s === "object") {
-        // 常见形态：{url:"..."}/{href:"..."}；否则转 JSON 文本兜底
-        s = (s.url ?? s.href ?? JSON.stringify(s));
-    }
-    s = String(s ?? "").trim();
-    if (!s) return null;
-    if (!/^[a-z]+:\/\//i.test(s)) s = "https://" + s.replace(/^\/+/, "");
-    return s;
-}
-
-function normalizeTarget(raw?: any): "_blank" | "_self" {
-    const s = String(raw ?? "").trim().toLowerCase();
-    if (s === "self" || s === "_self") return "_self";
-    return "_blank"; // new-tab 默认
-}
-
-// 小工具：从多个候选中取第一个非空
-const pick = <T,>(...xs: T[]) => xs.find(v => {
-    const s = (typeof v === "string") ? v.trim() : v;
-    return s !== undefined && s !== null && s !== "";
-});
 
 registerNode({
     type: "OpenUrl",
@@ -67,60 +75,46 @@ registerNode({
         const urlCtrl    = api.readControl(node, "url");
         const targetCtrl = api.readControl(node, "target");
 
-        // 3) 多通道读取 args：Hooks.getVar → api.getVar → api.vars → 全局兜底
+        // 3) args 多通道（Hooks → api.getVar → api.vars → 全局）
         const getByPath = (obj: any, path: string) =>
             path.split(".").reduce((acc, k) => (acc == null ? undefined : acc[k]), obj);
-
         const getArg = (path: string) => {
-            const hv = typeof Hooks.getVar === "function" ? Hooks.getVar(path) : undefined;
-            const av = typeof (api as any).getVar === "function" ? (api as any).getVar(path) : undefined;
+            const hv = typeof Hooks?.getVar === "function" ? Hooks.getVar(path) : undefined;
+            const av = typeof (api as any)?.getVar === "function" ? (api as any).getVar(path) : undefined;
             const vv = (api as any)?.vars ? getByPath((api as any).vars, path) : undefined;
             const gv = (globalThis as any).__JAVELIN_SCOPE__ ? getByPath((globalThis as any).__JAVELIN_SCOPE__, path) : undefined;
             return hv ?? av ?? vv ?? gv;
         };
-
         const argUrl    = getArg("args.url")    ?? getArg("url");
         const argTarget = getArg("args.target") ?? getArg("target");
 
-        // 4) 三重优先级：输入口 > args > 控件
-        const finalUrl =
-            (() => {
-                let v = urlFromInput ?? argUrl ?? urlCtrl ?? "";
-                if (v && typeof v === "object") v = v.url ?? v.href ?? JSON.stringify(v);
-                v = String(v ?? "").trim();
-                if (!v) return null;
-                if (!/^https?:\/\//i.test(v)) v = "https://" + v.replace(/^\/+/, "");
-                return v;
-            })();
+        // 4) 计算最终 url/target（输入口 > args > 控件）
+        const candidates = urlFromInput ?? argUrl ?? urlCtrl ?? "";
+        const arr = Array.isArray(candidates) ? candidates : [candidates];
+        const urls = arr
+            .map(normalizeUrl)
+            .filter((x): x is string => !!x)
+            .slice(0, 3); // 最多尝试 3 个，避免一次性触发多重拦截
 
-        const finalTarget =
-            (() => {
-                const raw = (targetFromInput ?? argTarget ?? targetCtrl ?? "new-tab");
-                const s = String(raw).trim().toLowerCase();
-                return (s === "self" || s === "_self") ? "_self" : "_blank";
-            })();
+        const finalTarget = normalizeTarget(targetFromInput ?? argTarget ?? targetCtrl ?? "new-tab");
 
-        console.log("[OpenUrl.runtime] inputs", {
-            urlFromInput, argUrl, urlCtrl,
-            targetFromInput, argTarget, targetCtrl,
-            finalUrl, finalTarget,
-            hasHooks: typeof Hooks.getVar === "function"
-        });
-
-        // 5) 打开
+        // 5) 打开（优先使用 api.openUrl；否则 window.open；被拦截则事件兜底）
         try {
-            if (finalUrl) {
+            for (const u of urls) {
+                if (dedup(u)) continue;
+
                 if (typeof (api as any).openUrl === "function") {
-                    await (api as any).openUrl(finalUrl, finalTarget);
-                } else {
-                    window.open(finalUrl, finalTarget);
+                    await (api as any).openUrl(u, finalTarget);
+                } else if (typeof window !== "undefined") {
+                    const w = window.open(u, finalTarget);
+                    if (!w) emitPending(u, finalTarget);
                 }
             }
         } catch (e) {
             console.warn("[OpenUrl.runtime] open failed:", e);
         }
 
+        // 6) 仅返回控制流（与“以前”的外观一致）
         return { next: api.nextBy(node.id, "next") };
     }
 });
-

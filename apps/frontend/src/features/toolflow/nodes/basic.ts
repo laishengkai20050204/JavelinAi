@@ -231,14 +231,20 @@ registerNode({
     create: () => new LoggerNode()
 });
 
+// apps/frontend/src/features/toolflow/nodes/basic.ts
 export class OutputNode extends ClassicPreset.Node {
     constructor() {
         super("Output");
+        this.addInput("in", new ClassicPreset.Input(controlSocket, "in"));
         this.addInput("text", new ClassicPreset.Input(stringSocket, "text"));
+        // 允许继续执行，支持多个 Output 顺序出现
+        this.addOutput("next", new ClassicPreset.Output(controlSocket, "next"));
         this.addOutput("out", new ClassicPreset.Output(stringSocket, "out"));
+        // 可选：命名本 Output，聚合时作为 key
+        this.addControl("name", new ClassicPreset.InputControl("text", { initial: "" }));
     }
     data(inputs: { text?: any[] }) {
-        return { out: inputs.text?.[0] ?? "" };
+        return { out: inputs.text?.[0] ?? "", next: 1 };
     }
 }
 registerNode({
