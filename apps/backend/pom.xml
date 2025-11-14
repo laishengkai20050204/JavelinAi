@@ -120,7 +120,19 @@
             <version>0.64.8</version>
         </dependency>
 
+        <!-- io.minio 官方 SDK（推荐） -->
+        <dependency>
+            <groupId>io.minio</groupId>
+            <artifactId>minio</artifactId>
+            <version>8.6.0</version>
+        </dependency>
 
+        <!-- 可选：Mime 类型检测（上传时自动推断 Content-Type） -->
+        <dependency>
+            <groupId>org.apache.tika</groupId>
+            <artifactId>tika-core</artifactId>
+            <version>3.2.3</version>
+        </dependency>
 
 
 

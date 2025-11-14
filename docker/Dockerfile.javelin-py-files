@@ -1,0 +1,53 @@
+FROM python:3.11-slim-bookworm
+
+# 改成阿里云
+ARG APT_MIRROR=https://mirrors.aliyun.com
+ARG PIP_MIRROR=https://mirrors.aliyun.com/pypi/simple
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PIP_INDEX_URL=${PIP_MIRROR} \
+    PIP_EXTRA_INDEX_URL= \
+    PIP_DEFAULT_TIMEOUT=60 \
+    PIP_PREFER_BINARY=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+# ---- APT：国内源 + 回落官方源 + 运行时依赖 ----
+RUN set -eux; \
+    codename="$(. /etc/os-release; echo "$VERSION_CODENAME")"; \
+    { \
+      echo "deb ${APT_MIRROR}/debian ${codename} main contrib non-free non-free-firmware"; \
+      echo "deb ${APT_MIRROR}/debian ${codename}-updates main contrib non-free non-free-firmware"; \
+      echo "deb ${APT_MIRROR}/debian-security ${codename}-security main contrib non-free non-free-firmware"; \
+    } > /etc/apt/sources.list; \
+    apt-get update -o Acquire::Retries=5 || { \
+      echo "mirror failed, fallback to official"; \
+      { \
+        echo "deb http://deb.debian.org/debian ${codename} main contrib non-free non-free-firmware"; \
+        echo "deb http://deb.debian.org/debian ${codename}-updates main contrib non-free non-free-firmware"; \
+        echo "deb http://security.debian.org/debian-security ${codename}-security main contrib non-free non-free-firmware"; \
+      } > /etc/apt/sources.list; \
+      apt-get update -o Acquire::Retries=5; \
+    }; \
+    apt-get install -y --no-install-recommends \
+      ca-certificates curl git zip unzip p7zip-full xz-utils zstd tar \
+      libarchive13 libarchive-tools libmagic1 fonts-noto-cjk \
+      libgomp1 libglib2.0-0 libgl1 libsm6 libxext6 libxrender1 libfreetype6 libpng16-16 \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---- 升级打包工具 + 科学栈一把装全 ----
+RUN pip install --no-cache-dir --prefer-binary \
+    numpy pandas scipy pyarrow fastparquet \
+    openpyxl xlrd==1.2.0 xlsxwriter pyxlsb \
+    requests httpx pyyaml tomli ujson orjson \
+    chardet charset-normalizer python-magic beautifulsoup4 lxml pillow \
+    py7zr libarchive-c rarfile \
+    tqdm rich pydantic typing-extensions \
+    python-docx python-pptx \
+    matplotlib seaborn plotly \
+    scikit-learn statsmodels sympy \
+    numba numexpr joblib patsy \
+    scikit-image opencv-python-headless pywavelets imageio \
+    polars dask distributed networkx \
+    xgboost lightgbm \
+    pypdf2 pdfminer.six reportlab pdfrw

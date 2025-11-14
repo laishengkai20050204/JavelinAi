@@ -1,14 +1,14 @@
 {
   "compatibility" : "OPENAI",
-  "model" : "deepseek-chat",
-  "toolsMaxLoops" : 10,
+  "model" : "glm-4.6",
+  "toolsMaxLoops" : 100,
   "toolToggles" : {
     "debug_tool" : false,
     "get_server_time" : false,
     "find_relevant_memory" : false
   },
-  "baseUrl" : "https://api.deepseek.com",
-  "apiKey" : "sk-f7b984ec955240a2a81f341792191927",
+  "baseUrl" : "https://dashscope.aliyuncs.com/compatible-mode",
+  "apiKey" : "sk-b977c46e3f5249bc86f6cdf499283585",
   "clientTimeoutMs" : 180000,
   "streamTimeoutMs" : 240000,
   "memoryMaxMessages" : 100

@@ -44,43 +44,52 @@ public class ContinuationServiceImpl implements ContinuationService {
             int seq = safeNextSeq(userId, conversationId, stepId);
 
             for (ToolResult r : results) {
-                // 1) 统一成 Map，便于读取 payload/args/_executedKey
-                Map<String, Object> data = coerceToMap(r.data());
 
-                // 2) 权威参数字符串（优先 data.args，其次从 _executedKey 里抠）
-                String argsStr = extractArgsString(data);
+                try {
+                    // 1) 统一成 Map，便于读取 payload/args/_executedKey
+                    Map<String, Object> data = coerceToMap(r.data());
 
-                // 3) 可读字符串，写进 DB.content（模型看的就是这个）
-                String content = ToolPayloads.extractReadableText(data, objectMapper);
-                if (content == null) content = "";
-                if (content == null) content = "";
+                    // 2) 权威参数字符串（优先 data.args，其次从 _executedKey 里抠）
+                    String argsStr = extractArgsString(data);
 
-                // 4) 组织 payload（要带上 args & callId）
-                String callId = r.callId();                  // ★ 用 callId
-                if (callId == null || callId.isBlank()) {
-                    // 防御：尝试从 data 里兜底；再不行就生成一个
-                    Object tid = data.get("tool_call_id");
-                    callId = (tid != null && !String.valueOf(tid).isBlank())
-                            ? String.valueOf(tid)
-                            : "call_" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
+                    // 3) 可读字符串，写进 DB.content（模型看的就是这个）
+                    String content = extractReadableText(data);   // 用本类自带的安全方法
+                    if (content == null) content = "";
+
+                    // 4) 组织 payload（要带上 args & callId）
+                    String callId = r.callId();                  // ★ 用 callId
+                    if (callId == null || callId.isBlank()) {
+                        // 防御：尝试从 data 里兜底；再不行就生成一个
+                        Object tid = data.get("tool_call_id");
+                        callId = (tid != null && !String.valueOf(tid).isBlank())
+                                ? String.valueOf(tid)
+                                : "call_" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
+                    }
+
+                    Map<String, Object> payload = new LinkedHashMap<>();
+                    payload.put("name", r.name());
+                    payload.put("tool_call_id", callId);         // ★ 关键：与模型/决策的 id 对上
+                    payload.put("reused", r.reused());
+                    payload.put("status", r.status());
+                    payload.put("args", argsStr);                // ★ 关键：独立落库，组装层直接用
+                    payload.put("data", data);                   // 原始对象保留（含 _executedKey / payload）
+
+                    Object p = data.get("payload");
+                    boolean empty = (p instanceof java.util.Collection<?> c && c.isEmpty());
+                    payload.put("empty", empty);
+
+                    memoryService.upsertMessage(
+                            userId, conversationId,
+                            "tool",
+                            content,
+                            toJson(payload),
+                            stepId, seq++,
+                            "DRAFT"
+                    );
+                }catch (Exception ex) {
+                    log.warn("[memory] appendToolResultsToMemory one result failed: stepId={}, tool={}, err={}",
+                            stepId, r.name(), ex.toString(), ex);
                 }
-
-                Map<String, Object> payload = new LinkedHashMap<>();
-                payload.put("name", r.name());
-                payload.put("tool_call_id", callId);         // ★ 关键：与模型/决策的 id 对上
-                payload.put("reused", r.reused());
-                payload.put("status", r.status());
-                payload.put("args", argsStr);                // ★ 关键：独立落库，组装层直接用
-                payload.put("data", data);                   // 原始对象保留（含 _executedKey / payload）
-
-                memoryService.upsertMessage(
-                        userId, conversationId,
-                        "tool",
-                        content,
-                        toJson(payload),
-                        stepId, seq++,
-                        "DRAFT"
-                );
             }
 
             // 下一轮要拼回 messages 的话
