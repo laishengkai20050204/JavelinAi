@@ -113,7 +113,7 @@ public class PythonExecTool implements AiTool {
         String code   = asString(args.get("code"), "");
         @SuppressWarnings("unchecked")
         List<String> pipPkgs = (List<String>) args.getOrDefault("pip", Collections.emptyList());
-        int timeoutMs = ((Number) args.getOrDefault("timeout_ms", 30000)).intValue();
+        int timeoutMs = ((Number) args.getOrDefault("timeout_ms", 5 * 60 * 1000)).intValue();
         @SuppressWarnings("unchecked")
         List<Map<String,String>> files = (List<Map<String,String>>) args.getOrDefault("files", Collections.emptyList());
         @SuppressWarnings("unchecked")
@@ -142,7 +142,7 @@ public class PythonExecTool implements AiTool {
             }
 
             // 2) baseline 快照（写完输入之后）
-            Set<String> beforeFiles = scanFilesSnapshot(convDir);
+            Map<String, FileStat> beforeFiles = scanFilesSnapshot(convDir);
 
             // 3) 执行 Python
             String stdout, stderr;
@@ -186,24 +186,45 @@ public class PythonExecTool implements AiTool {
                 stdout = r.stdout(); stderr = r.stderr(); exit = r.exitCode();
             }
 
-            // 4) after 快照 & 计算新增文件
-            Set<String> afterFiles = scanFilesSnapshot(convDir);
-            Set<String> newFiles = new HashSet<>(afterFiles);
-            newFiles.removeAll(beforeFiles);
+            // 4) after 快照
+            Map<String, FileStat> afterFiles = scanFilesSnapshot(convDir);
 
-            // 5) 内联小文本（仅限 return_files），并上传新增文件到 MinIO
+            // 4.1 计算“有变化的文件”（新建 + 修改），并排除 resource(s) 目录
+            List<String> changedFiles = new ArrayList<>();
+            for (Map.Entry<String, FileStat> entry : afterFiles.entrySet()) {
+                String rel = entry.getKey();
+
+                // ✅ 排除 resource / resources 目录
+                if (isResourcePath(rel)) {
+                    continue;
+                }
+
+                FileStat afterStat = entry.getValue();
+                FileStat beforeStat = beforeFiles.get(rel);
+
+                if (beforeStat == null) {
+                    // 新文件
+                    changedFiles.add(rel);
+                } else if (beforeStat.size != afterStat.size
+                        || beforeStat.lastModifiedMillis != afterStat.lastModifiedMillis) {
+                    // 内容有变化（用 size + lastModified 粗略判断）
+                    changedFiles.add(rel);
+                }
+            }
+
+            // 5) 内联小文本（仅限 return_files），逻辑不变
             Map<String, String> inlineFiles = new LinkedHashMap<>();
             for (String rp : returnFiles) {
                 tryReadSmallText(convDir, rp, inlineFiles);
             }
 
             Map<String, Object> generatedFiles = new LinkedHashMap<>();
-            if (!newFiles.isEmpty()) {
+            if (!changedFiles.isEmpty()) {
                 String bucket = storageService.getDefaultBucket();
                 // 确保桶存在（阻塞等一下即可）
                 storageService.ensureBucket(bucket).block(Duration.ofSeconds(10));
 
-                for (String rel : newFiles) {
+                for (String rel : changedFiles) {
                     Path p = convDir.resolve(rel);
                     if (!Files.exists(p) || !Files.isRegularFile(p)) continue;
                     long size = Files.size(p);
@@ -228,6 +249,7 @@ public class PythonExecTool implements AiTool {
                 }
             }
 
+
             // 6) 组装并返回
             Map<String,Object> data = new LinkedHashMap<>();
             data.put("stdout", stdout);
@@ -249,6 +271,17 @@ public class PythonExecTool implements AiTool {
         }
     }
 
+    private static final class FileStat {
+        final long size;
+        final long lastModifiedMillis;
+
+        FileStat(long size, long lastModifiedMillis) {
+            this.size = size;
+            this.lastModifiedMillis = lastModifiedMillis;
+        }
+    }
+
+
     // ===== helpers =====
 
     private static void tryReadSmallText(Path base, String rel, Map<String,String> out) {
@@ -262,21 +295,33 @@ public class PythonExecTool implements AiTool {
         } catch (Exception ignore) {}
     }
 
-    private Set<String> scanFilesSnapshot(Path root) {
-        Set<String> result = new HashSet<>();
+    private Map<String, FileStat> scanFilesSnapshot(Path root) {
+        Map<String, FileStat> result = new HashMap<>();
         if (!Files.exists(root)) return result;
         try {
             Files.walk(root)
                     .filter(Files::isRegularFile)
                     .forEach(p -> {
                         String rel = root.relativize(p).toString().replace('\\','/');
-                        result.add(rel);
+                        try {
+                            long size = Files.size(p);
+                            long lastModified = Files.getLastModifiedTime(p).toMillis();
+                            result.put(rel, new FileStat(size, lastModified));
+                        } catch (Exception e) {
+                            log.warn("scanFilesSnapshot stat failed for {}", p, e);
+                        }
                     });
         } catch (Exception e) {
             log.warn("scanFilesSnapshot failed for {}", root, e);
         }
         return result;
     }
+
+    private static boolean isResourcePath(String rel) {
+        // 这里统一用 '/'，上面 scanFilesSnapshot 已经把 '\' 换成 '/' 了
+        return rel.startsWith("resource/") || rel.startsWith("resources/");
+    }
+
 
     private static String asString(Object v, String def) { return v == null ? def : String.valueOf(v); }
 

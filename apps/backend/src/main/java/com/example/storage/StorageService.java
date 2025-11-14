@@ -16,6 +16,9 @@ public interface StorageService {
     /** 根据业务规则构建对象 key */
     String buildObjectKey(String userId, String conversationId, String fileName);
 
+    /** ✅ 新增：专门给“用户上传资源”用 */
+    String buildUserResourceKey(String userId, String conversationId, String filename);
+
     /** 确保桶存在（幂等） */
     Mono<Void> ensureBucket(String bucket);
 

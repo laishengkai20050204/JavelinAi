@@ -51,6 +51,14 @@ public class MinioStorageService implements StorageService {
         );
     }
 
+    /** ✅ 新增：用户上传的资源文件，固定放在 resources/ 子目录下 */
+    @Override
+    public String buildUserResourceKey(String userId, String conversationId, String filename) {
+        // 如果你想目录叫 resource 而不是 resources，这里改成 "resource/" 即可
+        return buildObjectKey(userId, conversationId, "resources/" + filename);
+    }
+
+
     private String safe(String s) {
         if (s == null) return "na";
         return s.replaceAll("[^a-zA-Z0-9._-]", "_");

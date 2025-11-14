@@ -3,6 +3,8 @@ package com.example.tools.impl.docker;
 import lombok.extern.slf4j.Slf4j;
 
 import java.io.*;
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.time.Duration;
@@ -86,10 +88,91 @@ public class DockerEphemeralRunner {
             String[] extra = props.extraRunArgs.trim().split("\\s+");
             for (String t : extra) if (!t.isBlank()) cmd.add(t);
         }
-        if (denyNet) { cmd.add("--network"); cmd.add("none"); }
+
+        String httpProxy = firstNonBlank(
+                System.getenv("HTTP_PROXY"),
+                System.getenv("http_proxy")
+        );
+        httpProxy = adaptProxyForDocker(httpProxy);
+        if (httpProxy != null && !httpProxy.isBlank()) {
+            cmd.add("-e"); cmd.add("HTTP_PROXY=" + httpProxy);
+            cmd.add("-e"); cmd.add("http_proxy=" + httpProxy);
+        }
+
+        String httpsProxy = firstNonBlank(
+                System.getenv("HTTPS_PROXY"),
+                System.getenv("https_proxy")
+        );
+        httpsProxy = adaptProxyForDocker(httpsProxy);
+        if (httpsProxy != null && !httpsProxy.isBlank()) {
+            cmd.add("-e"); cmd.add("HTTPS_PROXY=" + httpsProxy);
+            cmd.add("-e"); cmd.add("https_proxy=" + httpsProxy);
+        }
+
+        String noProxy = firstNonBlank(
+                System.getenv("NO_PROXY"),
+                System.getenv("no_proxy")
+        );
+        // no_proxy 里一般就是域名/IP 列表，不用改 host，直接传
+        if (noProxy != null && !noProxy.isBlank()) {
+            cmd.add("-e"); cmd.add("NO_PROXY=" + noProxy);
+            cmd.add("-e"); cmd.add("no_proxy=" + noProxy);
+        }
+
+
+        if (denyNet) {
+            cmd.add("--network");
+            cmd.add("none");
+        }
         // 默认 -w 由调用方决定
         return cmd;
     }
+
+    // 小工具方法，放在类里即可
+    private static String firstNonBlank(String a, String b) {
+        if (a != null && !a.isBlank()) return a;
+        if (b != null && !b.isBlank()) return b;
+        return null;
+    }
+
+    private static String adaptProxyForDocker(String proxy) {
+        if (proxy == null || proxy.isBlank()) return proxy;
+        try {
+            // 确保有 scheme，方便用 URI 解析
+            String raw = proxy;
+            String withScheme = raw.contains("://") ? raw : "http://" + raw;
+            URI uri = new URI(withScheme);
+            String host = uri.getHost();
+            if (host == null) return proxy;
+
+            if (!"127.0.0.1".equals(host) && !"localhost".equalsIgnoreCase(host)) {
+                // 不是本机地址，就不改
+                return proxy;
+            }
+
+            URI newUri = new URI(
+                    uri.getScheme(),
+                    uri.getUserInfo(),
+                    "host.docker.internal",      // ✅ 替换为宿主机域名
+                    uri.getPort(),
+                    uri.getPath(),
+                    uri.getQuery(),
+                    uri.getFragment()
+            );
+            String result = newUri.toString();
+            // 如果原来没有 scheme，就去掉我们临时加的 "http://"
+            if (!raw.contains("://") && result.startsWith("http://")) {
+                return result.substring("http://".length());
+            }
+            return result;
+        } catch (URISyntaxException e) {
+            // 解析失败就用简单替换兜底
+            return proxy
+                    .replace("127.0.0.1", "host.docker.internal")
+                    .replace("localhost", "host.docker.internal");
+        }
+    }
+
 
     private static String subPath(Path base, Path sub) {
         Path rel = base.relativize(sub);

@@ -52,7 +52,12 @@ ai:
         read-only-root: true
         cpus: "2.0"
         memory: "2g"
-        extra-create-args: "--pids-limit 256 --tmpfs /tmp --tmpfs /var/tmp --security-opt no-new-privileges"
+        extra-create-args: >
+          --pids-limit 256
+          --tmpfs /tmp
+          --tmpfs /var/tmp
+          --security-opt no-new-privileges
+          --add-host=host.docker.internal:host-gateway
       # —— 网络策略
       deny-network-after-setup: false  # 装完依赖后自动断网
       # —— 容器空闲回收
