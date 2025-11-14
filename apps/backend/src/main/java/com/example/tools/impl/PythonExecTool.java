@@ -2,421 +2,293 @@ package com.example.tools.impl;
 
 import com.example.ai.tools.AiToolComponent;
 import com.example.api.dto.ToolResult;
-import com.example.config.PythonToolProperties;
+import com.example.storage.MinioStorageService;
 import com.example.tools.AiTool;
+import com.example.tools.impl.docker.DockerEphemeralRunner;
+import com.example.tools.impl.docker.PythonContainerPool;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
+import org.springframework.beans.factory.annotation.Value;
 
-import java.io.*;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.security.MessageDigest;
+import java.nio.file.*;
 import java.time.Duration;
 import java.util.*;
-import java.util.concurrent.*;
 
+/**
+ * Python 执行工具（无外部显式文件上传参数）：
+ * - per-user-container=true  → 每用户长驻容器
+ * - per-user-container=false → 临时容器（每次 docker run --rm）
+ *
+ * 执行流程：
+ * 1) 写入 main.py 与输入文件
+ * 2) 对会话目录做 baseline 快照
+ * 3) 运行 Python
+ * 4) 扫描 after 快照，取新增文件 = after - before
+ * 5) 逐个新增文件上传 MinIO；小文本按 return_files 内联
+ * 6) 返回 {stdout, stderr, exit_code, files(内联), generated_files(含key/size/url)}
+ */
 @Slf4j
 @AiToolComponent
-//@RequiredArgsConstructor
+@RequiredArgsConstructor
 public class PythonExecTool implements AiTool {
 
-    private final PythonToolProperties props;
+    private final PythonContainerPool containerPool;
+    private final MinioStorageService minio; // 注入你已有的 MinioStorageService
 
-    public PythonExecTool(PythonToolProperties props) {
-        this.props = props;
-        log.debug("PythonExecTool init. docker={}, image={}, denyNet={}, cmd={}, timeout={}",
-                props.isUseDocker(), props.getDockerImage(), props.isDenyNetwork(),
-                props.getPythonCmd(), props.getTimeout());
-    }
+    @Value("${ai.tools.python.workspace-root:/var/javelin/workspaces/pyexec}")
+    private String workspaceRoot;
+    @Value("${ai.tools.python.docker-image:python:3.11-slim}")
+    private String dockerImage;
+    @Value("${ai.tools.python.docker.user:65534:65534}")
+    private String dockerUser;
+    @Value("${ai.tools.python.docker.read-only-root:true}")
+    private boolean readOnlyRoot;
+    @Value("${ai.tools.python.docker.cpus:1.0}")
+    private String dockerCpus;
+    @Value("${ai.tools.python.docker.memory:1g}")
+    private String dockerMemory;
+    @Value("${ai.tools.python.docker.extra-create-args:--pids-limit 256 --tmpfs /tmp --tmpfs /var/tmp --security-opt no-new-privileges}")
+    private String extraCreateArgs;
+    @Value("${ai.tools.python.deny-network-after-setup:true}")
+    private boolean denyNetworkAfterSetup;
+    @Value("${ai.tools.python.idle-ttl-minutes:60}")
+    private int idleTtlMinutes;
+    @Value("${ai.tools.python.allow-pip:true}")
+    private boolean allowPip;
+    @Value("${ai.tools.python.per-user-container:true}")
+    private boolean perUserContainer;
+
+    // 小文本内联阈值（1MB）
+    private static final long INLINE_LIMIT = 1L * 1024 * 1024;
 
     @Override
     public String name() { return "python_exec"; }
 
     @Override
     public String description() {
-        return "Run short Python 3 code on the server and return stdout/stderr. Use for quick computation or parsing.";
+        return "在 Docker 中执行 Python；自动检测本次新增文件并上传到 MinIO，返回文件下载信息。";
     }
 
     @Override
     public Map<String, Object> parametersSchema() {
-        Map<String, Object> schema = new LinkedHashMap<>();
-        schema.put("type", "object");
-        Map<String, Object> propsNode = new LinkedHashMap<>();
-        propsNode.put("code", Map.of("type","string","description","Python 3 code to run. Print results to stdout."));
-        propsNode.put("stdin", Map.of("type","string","description","Optional stdin passed to the process."));
-        propsNode.put("args", Map.of("type","array","items", Map.of("type","string"), "description","Optional argv for the script."));
-        propsNode.put("timeout_ms", Map.of("type","integer","minimum",100,"maximum",600000,"default",15000));
-        propsNode.put("files", Map.of(
-                "type","array",
-                "items", Map.of("type","object","properties", Map.of(
-                        "path", Map.of("type","string","description","Relative path like data/in.txt"),
-                        "content", Map.of("type","string","description","Text content")
-                ), "required", List.of("path")),
-                "description","Optional auxiliary text files to create before running."
-        ));
-        propsNode.put("return_files", Map.of("type","array","items", Map.of("type","string"),
-                "description","Relative file paths to read back as text after execution."));
-        propsNode.put("pip", Map.of("type","array","items", Map.of("type","string"),
-                "description","Packages to pip install (ignored unless allowPip=true)."));
+        Map<String, Object> pathContent = new HashMap<>();
+        pathContent.put("type", "object");
+        pathContent.put("required", Collections.singletonList("path"));
+        Map<String, Object> pcProps = new HashMap<>();
+        pcProps.put("path", Map.of("type","string"));
+        pcProps.put("content", Map.of("type","string"));
+        pathContent.put("properties", pcProps);
 
-        schema.put("properties", propsNode);
-        schema.put("required", List.of("code"));
+        Map<String, Object> props = new LinkedHashMap<>();
+        props.put("user_id", Map.of("type","string","description","用户ID"));
+        props.put("conversation_id", Map.of("type","string","description","对话ID"));
+        props.put("step_id", Map.of("type","string","description","可选：步骤ID"));
+        props.put("code", Map.of("type","string","description","Python 源码"));
+        props.put("pip", Map.of("type","array","items", Map.of("type","string"), "description","需要安装的 pip 包"));
+        props.put("files", Map.of("type","array","items", pathContent, "description","执行前写入的文件"));
+        props.put("return_files", Map.of("type","array","items", Map.of("type","string"), "description","执行后要内联回读的小文本相对路径"));
+        props.put("timeout_ms", Map.of("type","integer","minimum",1,"description","超时（毫秒）"));
+
+        Map<String, Object> schema = new LinkedHashMap<>();
+        schema.put("type","object");
+        schema.put("required", Collections.singletonList("code"));
+        schema.put("properties", props);
         return schema;
     }
 
     @Override
     public ToolResult execute(Map<String, Object> args) {
-        if (!props.isEnabled()) {
-            log.error("python_exec is disabled by config.");
-            return ToolResult.error(null, name(), "tool is disabled by config");
-        }
+        String userId = asString(
+                args.get("user_id"),
+                asString(args.get("userId"), "anonymous")
+        );
+        String convId = asString(
+                args.get("conversation_id"),
+                asString(args.get("conversationId"), UUID.randomUUID().toString())
+        );
 
-        String userId = asString(args.getOrDefault("userId", null));
-        String convId = asString(args.getOrDefault("conversationId", null));
-        String stepId = asString(args.getOrDefault("_stepId", null));
-        if (userId != null) MDC.put("userId", userId);
-        if (convId != null) MDC.put("conversationId", convId);
+        String stepId = asString(args.get("step_id"), null);
+        String code   = asString(args.get("code"), "");
+        @SuppressWarnings("unchecked")
+        List<String> pipPkgs = (List<String>) args.getOrDefault("pip", Collections.emptyList());
+        int timeoutMs = ((Number) args.getOrDefault("timeout_ms", 30000)).intValue();
+        @SuppressWarnings("unchecked")
+        List<Map<String,String>> files = (List<Map<String,String>>) args.getOrDefault("files", Collections.emptyList());
+        @SuppressWarnings("unchecked")
+        List<String> returnFiles = (List<String>) args.getOrDefault("return_files", Collections.emptyList());
+
         if (stepId != null) MDC.put("stepId", stepId);
-
-        long t0 = System.nanoTime();
+        MDC.put("userId", userId);
+        MDC.put("conversationId", convId);
 
         try {
-            String code = asString(args.get("code"));
-            if (code == null || code.isBlank()) {
-                log.error("execute aborted: missing code");
-                return ToolResult.error(null, name(), "code is required");
-            }
-            String stdin = asString(args.get("stdin"));
-            List<String> argv = asStringList(args.get("args"));
-            List<Map<String, Object>> files = asMapList(args.get("files"));
-            List<String> returnFiles = asStringList(args.get("return_files"));
-            List<String> pip = asStringList(args.get("pip"));
-            int timeoutMs = clampTimeout(asInt(args.get("timeout_ms"), 15000));
+            // 目录结构：{workspaceRoot}/user-{uhash}/conv-{chash}
+            String uhash = shortHash(userId);
+            String chash = shortHash(convId);
+            Path userRoot = Paths.get(workspaceRoot, "user-" + uhash);
+            Path convDir = userRoot.resolve("conv-" + chash);
+            Files.createDirectories(convDir);
 
-            String codeHash = sha256Short(code);
-            log.info("python_exec start. codeLen={}, codeHash={}, argvSize={}, files={}, returnFiles={}, pip={}, timeoutMs={}",
-                    code.length(), codeHash, argv == null ? 0 : argv.size(),
-                    files == null ? 0 : files.size(),
-                    returnFiles == null ? 0 : returnFiles.size(),
-                    pip == null ? 0 : pip.size(),
-                    timeoutMs);
-
-            File workDir;
-            try {
-                workDir = Files.createTempDirectory("pyexec-").toFile();
-                log.debug("workDir created: {}", workDir.getAbsolutePath());
-            } catch (IOException e) {
-                log.error("failed to create tmp dir", e);
-                return ToolResult.error(null, name(), "failed to create tmp dir: " + e.getMessage());
+            // 1) 写入 main.py 与输入文件
+            Path main = convDir.resolve("main.py");
+            Files.writeString(main, code, StandardCharsets.UTF_8);
+            for (Map<String,String> f : files) {
+                String rel = Objects.requireNonNull(f.get("path"), "file.path required");
+                Path p = convDir.resolve(rel);
+                if (p.getParent() != null) Files.createDirectories(p.getParent());
+                Files.writeString(p, Objects.requireNonNullElse(f.get("content"), ""), StandardCharsets.UTF_8);
             }
 
-            // �?main.py
-            File script = new File(workDir, "main.py");
-            try (Writer w = new OutputStreamWriter(new FileOutputStream(script), StandardCharsets.UTF_8)) {
-                w.write(code);
-            } catch (IOException e) {
-                log.error("failed to write main.py", e);
-                return ToolResult.error(null, name(), "failed to write script: " + e.getMessage());
-            }
+            // 2) baseline 快照（写完输入之后）
+            Set<String> beforeFiles = scanFilesSnapshot(convDir);
 
-            // 写入辅助文件（保持不变）
-            if (files != null && !files.isEmpty()) {
-                for (Map<String, Object> f : files) {
-                    String rel = asString(f.get("path"));
-                    String content = asString(f.get("content"));
-                    if (rel == null || rel.isBlank()) continue;
-                    File dst = new File(workDir, rel);
-                    if (dst.getParentFile() != null) dst.getParentFile().mkdirs();
-                    try (Writer w = new OutputStreamWriter(new FileOutputStream(dst), StandardCharsets.UTF_8)) {
-                        w.write(content == null ? "" : content);
-                    } catch (IOException e) {
-                        log.error("failed to write file {}", rel, e);
-                        return ToolResult.error(null, name(), "failed to write file " + rel + ": " + e.getMessage());
-                    }
-                }
-                log.debug("aux files written: {}", files.size());
-            }
-
-            // pip（可选）
-            if (pip != null && !pip.isEmpty()) {
-                if (!props.isAllowPip()) {
-                    log.error("pip requested but allowPip=false, ignore. requested={}", pip);
+            // 3) 执行 Python
+            String stdout, stderr;
+            int exit;
+            if (perUserContainer) {
+                containerPool.applyConfig(
+                        dockerImage, workspaceRoot, dockerUser, readOnlyRoot,
+                        dockerCpus, dockerMemory, extraCreateArgs,
+                        denyNetworkAfterSetup, idleTtlMinutes
+                );
+                if (!pipPkgs.isEmpty()) {
+                    if (!allowPip) return ToolResult.error(null, name(), "pip disabled by server");
+                    containerPool.ensurePip(userId, pipPkgs, Duration.ofMinutes(5));
                 } else {
-                    log.info("pip installing: {}", pip);
-                    // ⬇️ 改用跨平台的 pip 执行
-                    ToolResult pipRes = runOnce(buildPipCmd(workDir, pip), null, workDir, timeoutMs);
-                    if (!"SUCCESS".equals(pipRes.status())) {
-                        log.error("pip failed: {}", pipRes.data());
-                        return ToolResult.error(null, name(), "pip install failed: " + pipRes.data());
-                    } else {
-                        log.debug("pip done.");
-                    }
+                    containerPool.ensureContainer(userId);
                 }
-            }
-
-            // 执行
-            List<String> cmd = buildRunCmd(workDir);     // ⬅️ 将在下面重写
-            if (argv != null && !argv.isEmpty()) cmd.addAll(argv);
-            log.debug("exec cmd: {}", safeJoin(cmd));
-
-            ToolResult run = runOnce(cmd, stdin, workDir, timeoutMs);
-
-            long durMs = Duration.ofNanos(System.nanoTime() - t0).toMillis();
-            log.info("python_exec finished in {} ms", durMs);
-
-            // ⬇️ ADD: “非零退出码”统一视为 ERROR，避免被去重器当�?SUCCESS 复用
-            Map<String, Object> runMap = asMap(run.data());
-            Map<String, Object> inner = asMap(runMap.getOrDefault("payload", runMap));
-            Integer ec = asInt(inner.get("exitCode"), null);
-            String so = asString(inner.get("stdout"));
-            String se = asString(inner.get("stderr"));
-            logAtOutputLevel(ec, so, se, props.getMaxOutputBytes());
-            if (ec != null && ec != 0) {
-                Map<String, Object> errPayload = new LinkedHashMap<>(inner);
-                errPayload.put("durationMs", durMs);
-                return ToolResult.error(null, name(), "python exit " + ec + (se == null || se.isBlank() ? "" : ("; stderr=" + abbreviate(se, 512))));
-            }
-            // ⬆️ ADD
-
-            // 回读文件
-            Map<String, Object> filesOut = new LinkedHashMap<>();
-            if (returnFiles != null) {
-                for (String p : returnFiles) {
-                    File f = new File(workDir, p);
-                    if (f.exists() && f.isFile()) {
-                        try {
-                            filesOut.put(p, Files.readString(f.toPath()));
-                        } catch (IOException e) {
-                            log.debug("read return file failed: {}", p, e);
-                        }
-                    } else {
-                        log.debug("return file not found: {}", p);
-                    }
-                }
-                if (!filesOut.isEmpty()) log.debug("return files read: {}", filesOut.keySet());
-            }
-
-            Map<String, Object> payload = new LinkedHashMap<>();
-            payload.put("durationMs", durMs);
-            // ⬇️ 兼容 runOnce 返回结构：可能是 {payload:{...}} 或直接扁�?{...}
-            if (!inner.isEmpty()) payload.putAll(inner);
-            if (!filesOut.isEmpty()) payload.put("files", filesOut);
-
-            return ToolResult.success(null, name(), false, Map.of("payload", payload));
-        } finally {
-            if (userId != null) MDC.remove("userId");
-            if (convId != null) MDC.remove("conversationId");
-            if (stepId != null) MDC.remove("stepId");
-        }
-    }
-
-
-    // ------------------- 进程执行与限�?-------------------
-
-    private ToolResult runOnce(List<String> cmd, String stdin, File workDir, int timeoutMs) {
-        ProcessBuilder pb = new ProcessBuilder(cmd);
-        pb.directory(workDir);
-        pb.redirectErrorStream(false);
-
-        // 🔧 新增：强制 UTF-8（Windows/Linux/macOS 通吃）
-        Map<String, String> env = pb.environment();
-        env.putIfAbsent("PYTHONIOENCODING", "utf-8");
-        env.putIfAbsent("PYTHONUTF8", "1");     // Python 3.7+
-        env.putIfAbsent("LANG", "C.UTF-8");     // *nix 常见
-        env.putIfAbsent("LC_ALL", "C.UTF-8");
-
-        try {
-            Process p = pb.start();
-
-            // stdin
-            try (OutputStream os = p.getOutputStream()) {
-                if (stdin != null && !stdin.isEmpty()) {
-                    os.write(stdin.getBytes(StandardCharsets.UTF_8));
-                }
-            }
-
-            ExecutorService es = Executors.newFixedThreadPool(2, r -> {
-                Thread t = new Thread(r, "pyexec-io");
-                t.setDaemon(true);
-                return t;
-            });
-
-            Future<byte[]> stdoutF = es.submit(() -> readLimited(p.getInputStream()));
-            Future<byte[]> stderrF = es.submit(() -> readLimited(p.getErrorStream()));
-
-            boolean finished = p.waitFor(timeoutMs, TimeUnit.MILLISECONDS);
-            if (!finished) {
-                p.destroyForcibly();
-                es.shutdownNow();
-                log.error("subprocess timeout: {} ms", timeoutMs);
-                return ToolResult.error(null, name(), "timeout after " + timeoutMs + " ms");
-            }
-
-            int exit = p.exitValue();
-            byte[] out = getFuture(stdoutF);
-            byte[] err = getFuture(stderrF);
-            es.shutdownNow();
-
-            Map<String, Object> res = new LinkedHashMap<>();
-            res.put("exitCode", exit);
-            res.put("stdout", new String(out, StandardCharsets.UTF_8));
-            res.put("stderr", new String(err, StandardCharsets.UTF_8));
-            res.put("truncated", Map.of(
-                    "stdout", out.length >= props.getMaxOutputBytes(),
-                    "stderr", err.length >= props.getMaxOutputBytes()
-            ));
-
-            if (exit == 0) {
-                log.debug("subprocess exit=0, stdoutLen={}, stderrLen={}", out.length, err.length);
+                var r = containerPool.exec(
+                        userId, convDir,
+                        Arrays.asList("/ws/.venv/bin/python","-X","utf8","-u","-B","main.py"),
+                        Duration.ofMillis(timeoutMs)
+                );
+                stdout = r.stdout(); stderr = r.stderr(); exit = r.exitCode();
             } else {
-                log.error("subprocess exit={}, stdoutLen={}, stderrLen={}", exit, out.length, err.length);
+                DockerEphemeralRunner.Props ep = new DockerEphemeralRunner.Props();
+                ep.dockerImage = dockerImage;
+                ep.workspaceRoot = workspaceRoot;
+                ep.dockerUser = dockerUser;
+                ep.readOnlyRoot = readOnlyRoot;
+                ep.cpus = dockerCpus;
+                ep.memory = dockerMemory;
+                ep.extraRunArgs = extraCreateArgs;
+                ep.denyNetworkAtExec = denyNetworkAfterSetup;
+
+                DockerEphemeralRunner runner = new DockerEphemeralRunner(ep);
+                runner.ensureVenv(userRoot);
+                if (!pipPkgs.isEmpty()) {
+                    if (!allowPip) return ToolResult.error(null, name(), "pip disabled by server");
+                    runner.pipInstall(userRoot, pipPkgs);
+                }
+                var r = runner.execPython(userRoot, convDir, timeoutMs);
+                stdout = r.stdout(); stderr = r.stderr(); exit = r.exitCode();
             }
 
-            return ToolResult.success(null, name(), false, res);
+            // 4) after 快照 & 计算新增文件
+            Set<String> afterFiles = scanFilesSnapshot(convDir);
+            Set<String> newFiles = new HashSet<>(afterFiles);
+            newFiles.removeAll(beforeFiles);
+
+            // 5) 内联小文本（仅限 return_files），并上传新增文件到 MinIO
+            Map<String, String> inlineFiles = new LinkedHashMap<>();
+            for (String rp : returnFiles) {
+                tryReadSmallText(convDir, rp, inlineFiles);
+            }
+
+            Map<String, Object> generatedFiles = new LinkedHashMap<>();
+            if (!newFiles.isEmpty()) {
+                String bucket = minio.getDefaultBucket();
+                // 确保桶存在（阻塞等一下即可）
+                minio.ensureBucket(bucket).block(Duration.ofSeconds(10));
+
+                for (String rel : newFiles) {
+                    Path p = convDir.resolve(rel);
+                    if (!Files.exists(p) || !Files.isRegularFile(p)) continue;
+                    long size = Files.size(p);
+
+                    String objectKey = minio.buildObjectKey(userId, convId, rel.replace('\\','/'));
+
+                    try {
+                        // 上传
+                        minio.uploadFile(bucket, objectKey, p).block(Duration.ofMinutes(2));
+                        // 预签名 1 小时
+                        String url = minio.presignGet(bucket, objectKey, Duration.ofHours(1))
+                                .block(Duration.ofSeconds(5));
+
+                        Map<String, Object> meta = new LinkedHashMap<>();
+                        meta.put("key", objectKey);
+                        meta.put("size", size);
+                        meta.put("url", url);
+                        generatedFiles.put(rel, meta);
+                    } catch (Exception e) {
+                        log.warn("upload/presign failed for {}", objectKey, e);
+                    }
+                }
+            }
+
+            // 6) 组装并返回
+            Map<String,Object> data = new LinkedHashMap<>();
+            data.put("stdout", stdout);
+            data.put("stderr", stderr);
+            data.put("exit_code", exit);
+            if (!inlineFiles.isEmpty()) data.put("files", inlineFiles);
+            if (!generatedFiles.isEmpty()) data.put("generated_files", generatedFiles);
+
+            return (exit == 0)
+                    ? ToolResult.success(null, name(), false, data)
+                    : ToolResult.error(null, name(), "python exit " + exit + "\n" + stderr);
+
         } catch (Exception e) {
-            log.error("subprocess failed: {}", e.toString());
-            return ToolResult.error(null, name(), e.getClass().getSimpleName() + ": " + e.getMessage());
+            log.error("python_exec failed", e);
+            return ToolResult.error(null, name(), e.getMessage());
+        } finally {
+            if (stepId != null) MDC.remove("stepId");
+            MDC.remove("userId"); MDC.remove("conversationId");
         }
     }
 
-    private byte[] readLimited(InputStream is) throws IOException {
-        ByteArrayOutputStream bos = new ByteArrayOutputStream();
-        byte[] buf = new byte[4096];
-        long limit = props.getMaxOutputBytes();
-        int r;
-        while ((r = is.read(buf)) != -1) {
-            int toWrite = (int) Math.min(r, Math.max(0, limit - bos.size()));
-            if (toWrite > 0) bos.write(buf, 0, toWrite);
-            if (bos.size() >= limit) break;
-        }
-        return bos.toByteArray();
-    }
+    // ===== helpers =====
 
-    private static byte[] getFuture(Future<byte[]> f) {
-        try { return f.get(5, TimeUnit.SECONDS); }
-        catch (Exception ignore) { return new byte[0]; }
-    }
-
-    // ------------------- 命令构建 -------------------
-
-
-    private int clampTimeout(int requestedMs) {
-        long max = props.getTimeout().toMillis();
-        if (requestedMs <= 0) return (int) Math.min(15000, max);
-        return (int) Math.min(requestedMs, max);
-    }
-
-    // ------------------- 日志辅助 -------------------
-
-    private static void logAtOutputLevel(Object exitCode, Object stdout, Object stderr, long limit) {
-        int ec = -1;
-        try { if (exitCode != null) ec = Integer.parseInt(String.valueOf(exitCode)); } catch (Exception ignore){}
-        String so = stdout == null ? "" : String.valueOf(stdout);
-        String se = stderr == null ? "" : String.valueOf(stderr);
-
-        String soPreview = safePreview(so, 200);
-        String sePreview = safePreview(se, 200);
-
-        if (ec == 0) {
-            log.debug("exit=0, stdoutPreview={}, stderrPreview={}", soPreview, sePreview);
-        } else {
-            log.error("exit={}, stdoutPreview={}, stderrPreview={}", ec, soPreview, sePreview);
-        }
-    }
-
-    private static String safePreview(String s, int n) {
-        if (s == null) return "";
-        if (s.length() <= n) return s;
-        return s.substring(0, n) + "...(+" + (s.length() - n) + " chars)";
-    }
-
-    private static String safeJoin(List<String> cmd) {
-        return String.join(" ", cmd);
-    }
-
-    private static String sha256Short(String s) {
+    private static void tryReadSmallText(Path base, String rel, Map<String,String> out) {
         try {
-            MessageDigest md = MessageDigest.getInstance("SHA-256");
-            byte[] d = md.digest(s.getBytes(StandardCharsets.UTF_8));
-            StringBuilder sb = new StringBuilder();
-            for (int i = 0; i < d.length; i++) {
-                sb.append(String.format("%02x", d[i]));
+            Path p = base.resolve(rel);
+            if (!Files.exists(p) || !Files.isRegularFile(p)) return;
+            long size = Files.size(p);
+            if (size <= INLINE_LIMIT) {
+                out.put(rel, Files.readString(p));
             }
-            return sb.substring(0, 16); // �?16 位做 preview
+        } catch (Exception ignore) {}
+    }
+
+    private Set<String> scanFilesSnapshot(Path root) {
+        Set<String> result = new HashSet<>();
+        if (!Files.exists(root)) return result;
+        try {
+            Files.walk(root)
+                    .filter(Files::isRegularFile)
+                    .forEach(p -> {
+                        String rel = root.relativize(p).toString().replace('\\','/');
+                        result.add(rel);
+                    });
         } catch (Exception e) {
-            return "na";
+            log.warn("scanFilesSnapshot failed for {}", root, e);
+        }
+        return result;
+    }
+
+    private static String asString(Object v, String def) { return v == null ? def : String.valueOf(v); }
+
+    private static String shortHash(String s) {
+        try {
+            var md = java.security.MessageDigest.getInstance("SHA-256");
+            byte[] d = md.digest(s.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < 6; i++) sb.append(String.format("%02x", d[i]));
+            return sb.toString();
+        } catch (Exception e) {
+            return Integer.toHexString(Objects.hashCode(s));
         }
     }
-
-    private static String asString(Object o) { return o == null ? null : String.valueOf(o); }
-
-    private static int asInt(Object o, int dft) {
-        try { return o == null ? dft : Integer.parseInt(String.valueOf(o)); }
-        catch (Exception e) { return dft; }
-    }
-
-    @SuppressWarnings("unchecked")
-    private static List<String> asStringList(Object o) {
-        if (o instanceof List<?> l) {
-            List<String> r = new ArrayList<>();
-            for (Object x : l) r.add(String.valueOf(x));
-            return r;
-        }
-        return null;
-    }
-
-    @SuppressWarnings("unchecked")
-    private static List<Map<String,Object>> asMapList(Object o) {
-        if (o instanceof List<?> l) {
-            List<Map<String,Object>> r = new ArrayList<>();
-            for (Object x : l) if (x instanceof Map<?,?> m) r.add((Map<String, Object>) m);
-            return r;
-        }
-        return null;
-    }
-
-
-    // ⬇️ ADD: 解析 python 命令（优先用配置；无配置时：Windows=py -3�?nix=python3�?
-    private List<String> resolvePythonCmdTokens() {
-        String raw = props.getPythonCmd(); // e.g. "python", "py -3", "C:\\Python311\\python.exe"
-        if (raw == null || raw.isBlank()) {
-            boolean win = System.getProperty("os.name").toLowerCase().contains("win");
-            raw = win ? "py -3" : "python3";
-        }
-        return Arrays.asList(raw.trim().split("\\s+"));
-    }
-
-    private List<String> buildRunCmd(File workDir) {
-        List<String> cmd = new ArrayList<>(resolvePythonCmdTokens());
-        cmd.addAll(List.of("-X", "utf8", "-u", "-B"));
-        cmd.add("main.py");
-        return cmd;
-    }
-
-    private List<String> buildPipCmd(File workDir, List<String> pkgs) {
-        List<String> cmd = new ArrayList<>(resolvePythonCmdTokens());
-        cmd.addAll(List.of("-X", "utf8"));
-        cmd.add("-m");
-        cmd.add("pip");
-        cmd.add("install");
-        cmd.addAll(pkgs);
-        return cmd;
-    }
-
-    // ⬇️ 小工具方法（若你类里已有同名/功能方法，可忽略�?
-    @SuppressWarnings("unchecked")
-    private Map<String, Object> asMap(Object o) {
-        return (o instanceof Map) ? (Map<String, Object>) o : new LinkedHashMap<>();
-    }
-
-    private Integer asInt(Object v, Integer dft) {
-        if (v instanceof Number n) return n.intValue();
-        try { return v == null ? dft : Integer.parseInt(String.valueOf(v)); } catch (Exception ignore) { return dft; }
-    }
-
-    private String abbreviate(String s, int max) {
-        if (s == null) return null;
-        return s.length() <= max ? s : s.substring(0, Math.max(0, max)) + "...";
-    }
-
 }

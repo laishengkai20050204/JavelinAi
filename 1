@@ -1,0 +1,330 @@
+2025-11-13T19:24:26.332+08:00 DEBUG 28908 --- [undedElastic-20] com.example.ai.SpringAiChatGateway       : Executing chat stream with model=deepseek-chat mode=OPENAI
+2025-11-13T19:26:50.405+08:00 DEBUG 28908 --- [tor-http-nio-19] com.example.ai.SpringAiChatGateway       : [AI-RESP:MSG(stream)] {
+  "role" : "assistant",
+  "content" : "现在运行您提供的代码：",
+  "tool_calls" : [ {
+    "id" : "call_00_6m7vs58oTr0ELzJ3j7A1YMkx",
+    "type" : "function",
+    "function" : {
+      "name" : "python_exec",
+      "arguments" : "{\"code\":\"# 将您的代码保存为文件\\ncode_content = \\\"\\\"\\\"# schedule_makespan.py\\n# -*- coding: utf-8 -*-\\n\\\"\\\"\\\"Makespan-aware greedy UAV insertion (pred/succ only).\\n- Truck graph: solid edges (1.csv), speed 50 km/h\\n- Drone graph: solid + dashed (2.csv), speed 75 km/h\\n- Demands: 3.csv (node -> kg); only nodes with q_u <= 50 are eligible for UAV\\n- Single UAV, single flight at a time, max flight time 70 minutes\\n- UAV must start/end at nodes on the truck route; service exactly one node u per sortie\\n- Accept a sortie only if it reduces GLOBAL makespan:\\n    new_makespan = max(new_truck_finish_time, UAV_finish_time) < current_makespan\\n\\\"\\\"\\\"\\n\\nimport io\\nimport math\\nimport argparse\\nfrom heapq import heappush, heappop\\nimport pandas as pd\\nimport numpy as np\\n\\n\\n# ---------- Robust CSV parsers ----------\\ndef parse_upper_tri_csv(path: str) -> pd.DataFrame:\\n    \\\"\\\"\\\"Parse a distance-like matrix csv (may be upper-triangular).\\n    Fills symmetric entries and sets diag=0. Index/cols -> '1'..'n' (str).\\\"\\\"\\\"\\n    with open(path, \\\"r\\\", encoding=\\\"utf-8\\\") as f:\\n        lines = [ln.strip(\\\"\\\\\\\\r\\\\\\\\n\\\") for ln in f.readlines()]\\n    cleaned = []\\n    for ln in lines:\\n        if not ln.strip():\\n            continue\\n        if \\\",\\\" not in ln:\\n            continue\\n        cleaned.append(ln)\\n    if not cleaned:\\n        raise RuntimeError(f\\\"No CSV-looking lines in {path}\\\")\\n    df = pd.read_csv(io.StringIO(\\\"\\\\\\\\n\\\".join(cleaned)), header=0)\\n    # normalize headers\\n    df.columns = [str(c).strip().replace(\\\"\\\\\\\\ufeff\\\", \\\"\\\") for c in df.columns]\\n    # numeric\\n    df = df.apply(pd.to_numeric, errors=\\\"coerce\\\")\\n    n = df.shape[0]\\n    df.index = [str(i + 1) for i in range(n)]\\n    # symmetrize and zero diag\\n    for i in range(n):\\n        for j in range(n):\\n            if i == j:\\n                df.iat[i, j] = 0.0\\n            else:\\n                a = df.iat[i, j]\\n                b = df.iat[j, i] if (j < df.shape[0] and i < df.shape[1]) else np.nan\\n                if pd.isna(a) and not pd.isna(b):\\n                    df.iat[i, j] = b\\n                elif not pd.isna(a) and not pd.isna(b):\\n                    df.iat[i, j] = min(a, b)\\n    df.columns = [str(i + 1) for i in range(n)]\\n    return df\\n\\n\\ndef parse_demands_csv(path: str, n_nodes_guess=14) -> dict:\\n    \\\"\\\"\\\"Parse demands in flexible formats: (node,demand) or a single row listing.\\\"\\\"\\\"\\n    try:\\n        df = pd.read_csv(path, header=0)\\n        # case: explicit node/demand columns\\n        node_col = None\\n        demand_col = None\\n        for c in df.columns:\\n            low = str(c).strip().lower()\\n            if low in (\\\"node\\\", \\\"节点\\\", \\\"点\\\", \\\"id\\\"):\\n                node_col = c\\n            if low in (\\\"demand\\\", \\\"需求\\\", \\\"需求kg\\\", \\\"q\\\", \\\"q_kg\\\"):\\n                demand_col = c\\n        if node_col and demand_col:\\n            m = {}\\n            for _, row in df.iterrows():\\n                try:\\n                    node = str(int(row[node_col]))\\n                    val = float(row[demand_col])\\n                    m[node] = val\\n                except Exception:\\n                    pass\\n            return m\\n        # case: two columns -> assume node,demand\\n        if df.shape[1] == 2:\\n            m = {}\\n            for _, row in df.iterrows():\\n                try:\\n                    node = str(int(row.iloc[0]))\\n                    val = float(row.iloc[1])\\n                    m[node] = val\\n                except Exception:\\n                    pass\\n            return m\\n        # case: single row listing demands for 1..n\\n        if df.shape[0] == 1 and df.shape[1] >= n_nodes_guess:\\n            m = {}\\n            for j in range(df.shape[1]):\\n                m[str(j + 1)] = float(df.iloc[0, j])\\n            return m\\n    except Exception:\\n        pass\\n    # fallback empty\\n    return {}\\n\\n\\n# ---------- Graph & shortest paths ----------\\ndef to_graph(df: pd.DataFrame) -> dict:\\n    \\\"\\\"\\\"Adjacency dict with weights in km.\\\"\\\"\\\"\\n    G = {}\\n    for i in df.index:\\n        row = {}\\n        for j in df.columns:\\n            val = df.loc[i, j]\\n            if pd.notna(val) and float(val) > 0 and i != j:\\n                row[j] = float(val)\\n        G[i] = row\\n    return G\\n\\n\\ndef dijkstra_km(G: dict, s: str, t: str):\\n    \\\"\\\"\\\"Shortest path length in km (and retrieve km length only).\\\"\\\"\\\"\\n    import heapq\\n    INF = float('inf')\\n    dist = {v: INF for v in G}\\n    dist[s] = 0.0\\n    pq = [(0.0, s)]\\n    while pq:\\n        d, u = heapq.heappop(pq)\\n        if d != dist[u]:\\n            continue\\n        if u == t:\\n            break\\n        for v, w in G[u].items():\\n            nd = d + w\\n            if nd < dist[v]:\\n                dist[v] = nd\\n                heapq.heappush(pq, (nd, v))\\n    return dist[t]\\n\\n\\ndef all_pairs_shortest_time_minutes(G: dict, speed_kmph: float) -> pd.DataFrame:\\n    \\\"\\\"\\\"Dijkstra for each source; return minutes matrix.\\\"\\\"\\\"\\n    labels = sorted(G.keys(), key=lambda x: int(x))\\n    INF = float('inf')\\n    out = {s: {t: INF for t in labels} for s in labels}\\n    for s in labels:\\n        # single-source dijkstra in 'hours'\\n        dist = {v: INF for v in labels}\\n        dist[s] = 0.0\\n        pq = [(0.0, s)]\\n        while pq:\\n            d, u = heappop(pq)\\n            if d != dist[u]:\\n                continue\\n            for v, w_km in G[u].items():\\n                nd = d + (w_km / max(speed_kmph, 1e-9))\\n                if nd < dist[v]:\\n                    dist[v] = nd\\n                    heappush(pq, (nd, v))\\n        for t in labels:\\n            out[s][t] = dist[t] * 60.0  # minutes\\n    df = pd.DataFrame(out).T\\n    df.index = labels\\n    df.columns = labels\\n    return df\\n\\n\\ndef minutes_truck_km(km: float) -> float:\\n    return km / 50.0 * 60.0\\n\\n\\n# ---------- Base route: NN + 2-opt on T^v ----------\\ndef nearest_neighbor_route(labels, depot, Tmin):\\n    unvisited = set(labels)\\n    route = [depot]\\n    unvisited.remove(depot)\\n    cur = depot\\n    while unvisited:\\n        best, best_t = None, float('inf')\\n        for v in unvisited:\\n            t = float(Tmin.loc[cur, v])\\n            if t < best_t:\\n                best, best_t = v, t\\n        if best is None or not np.isfinite(best_t):\\n            raise RuntimeError(f\\\"Unreachable from {cur}\\\")\\n        route.append(best)\\n        unvisited.remove(best)\\n        cur = best\\n    route.append(depot)\\n    return route\\n\\n\\ndef route_time_minutes(route, Tmin):\\n    tot = 0.0\\n    for i in range(len(route) - 1):\\n        t = float(Tmin.loc[route[i], route[i + 1]])\\n        if not np.isfinite(t):\\n            raise RuntimeError(f\\\"Edge {route[i]}->{route[i+1]} unreachable\\\")\\n        tot += t\\n    return tot\\n\\n\\ndef two_opt(route, Tmin, max_iters=2000):\\n    assert route[0] == route[-1]\\n    best = route[:]\\n    best_cost = route_time_minutes(best, Tmin)\\n    n = len(best) - 1\\n    improved = True\\n    it = 0\\n    while improved and it < max_iters:\\n        improved = False\\n        it += 1\\n        for i in range(1, n - 1):\\n            for j in range(i + 1, n):\\n                if j - i == 1:\\n                    continue\\n                cand = best[:i] + best[i:j][::-1] + best[j:]\\n                cost = route_time_minutes(cand, Tmin)\\n                if cost + 1e-9 < best_cost:\\n                    best, best_cost = cand, cost\\n                    improved = True\\n                    break\\n            if improved:\\n                break\\n    return best\\n\\n\\n# ---------- Build S, A on the real solid graph ----------\\ndef build_S_A(route_nodes, G_truck):\\n    S = []\\n    for i in range(len(route_nodes) - 1):\\n        a, b = route_nodes[i], route_nodes[i + 1]\\n        km = dijkstra_km(G_truck, a, b)\\n        if not np.isfinite(km):\\n            raise RuntimeError(f\\\"No truck path between {a} and {b}\\\")\\n        S.append(minutes_truck_km(km))\\n    A = [0.0]\\n    for t in S:\\n        A.append(A[-1] + t)\\n    return S, A\\n\\n\\n# ---------- Makespan-aware greedy (pred/succ only) ----------\\ndef makespan_greedy(truck_df, drone_df, demands_map, depot=\\\"9\\\"):\\n    G_truck = to_graph(truck_df)\\n    G_drone = to_graph(drone_df)\\n    T_truck_m = all_pairs_shortest_time_minutes(G_truck, 50.0)\\n    T_drone_m = all_pairs_shortest_time_minutes(G_drone, 75.0)\\n\\n    labels = sorted(T_truck_m.index.tolist(), key=lambda x: int(x))\\n    if depot not in labels:\\n        raise RuntimeError(f\\\"Depot '{depot}' not in labels\\\")\\n\\n    # truck-only base route\\n    init_route = nearest_neighbor_route(labels, depot, T_truck_m)\\n    opt_route = two_opt(init_route, T_truck_m)\\n\\n    # S, A on the real solid network\\n    S_cur, A_cur = build_S_A(opt_route, G_truck)\\n    truck_only = A_cur[-1]\\n\\n    # prepare demands; default 0\\n    demands = {v: float(demands_map.get(v, 0.0)) for v in labels}\\n    MAX_PAYLOAD = 50.0\\n    MAX_FLIGHT = 70.0\\n    drone_free = 0.0\\n    sorties = []\\n\\n    def idx_map(r): return {r[i]: i for i in range(len(r))}\\n\\n    def eligible_nodes(r):\\n        return [u for u in r[1:-1]\\n                if u != depot and 0.0 < demands.get(u, 0.0) <= MAX_PAYLOAD]\\n\\n    def test_candidate(route, S, A, drone_free_time, u):\\n        m = idx_map(route)\\n        idx = m[u]\\n        i_idx = idx - 1\\n        k_idx = idx + 1\\n        if i_idx < 0 or idx >= len(S):\\n            return None\\n        i_node = route[i_idx]\\n        k_node = route[k_idx]\\n        # UAV round flight duration\\n        Td = float(T_drone_m.loc[i_node, u] + T_drone_m.loc[u, k_node])\\n        if not np.isfinite(Td) or Td > MAX_FLIGHT + 1e-9:\\n            return None\\n        # local delta if skipping u\\n        t_pred_u = S[i_idx]\\n        t_u_succ = S[idx]\\n        Tv_ps = float(T_truck_m.loc[i_node, k_node])\\n        delta = (t_pred_u + t_u_succ) - Tv_ps\\n        if delta <= 1e-9:\\n            return None\\n\\n        # current makespan\\n        current = max(A[-1], drone_free_time)\\n        # schedule\\n        start = max(A[i_idx], drone_free_time)\\n        finish = start + Td\\n\\n        # new route after removing u\\n        new_route = route[:i_idx + 1] + [k_node] + route[k_idx + 1:]\\n        new_S, new_A = build_S_A(new_route, G_truck)\\n\\n        new_truck_finish = new_A[-1]\\n        new_makespan = max(new_truck_finish, finish)\\n        gain = current - new_makespan  # >0 better\\n        return {\\n            \\\"u\\\": u,\\n            \\\"i_idx\\\": i_idx, \\\"k_idx\\\": k_idx,\\n            \\\"i_node\\\": i_node, \\\"k_node\\\": k_node,\\n            \\\"Td\\\": Td, \\\"delta\\\": delta, \\\"Tv_ps\\\": Tv_ps,\\n            \\\"start\\\": start, \\\"finish\\\": finish,\\n            \\\"new_route\\\": new_route, \\\"new_S\\\": new_S, \\\"new_A\\\": new_A,\\n            \\\"new_truck_finish\\\": new_truck_finish,\\n            \\\"current\\\": current, \\\"new\\\": new_makespan, \\\"gain\\\": gain\\n        }\\n\\n    route = opt_route[:]\\n    while True:\\n        best = None\\n        for u in eligible_nodes(route):\\n            cand = test_candidate(route, S_cur, A_cur, drone_free, u)\\n            if cand is None:\\n                continue\\n            if cand[\\\"gain\\\"] > 1e-6 and (best is None or cand[\\\"gain\\\"] > best[\\\"gain\\\"]):\\n                best = cand\\n        if best is None:\\n            break\\n        # accept best\\n        sorties.append({\\n            \\\"serve\\\": best[\\\"u\\\"],\\n            \\\"from\\\": best[\\\"i_node\\\"],\\n            \\\"to\\\": best[\\\"k_node\\\"],\\n            \\\"start_min\\\": round(best[\\\"start\\\"], 1),\\n            \\\"finish_min\\\": round(best[\\\"finish\\\"], 1),\\n            \\\"flight_min\\\": round(best[\\\"Td\\\"], 1),\\n            \\\"makespan_gain_min\\\": round(best[\\\"gain\\\"], 1)\\n        })\\n        drone_free = best[\\\"finish\\\"]\\n        route = best[\\\"new_route\\\"]\\n        S_cur, A_cur = best[\\\"new_S\\\"], best[\\\"new_A\\\"]\\n\\n    final_makespan = max(A_cur[-1], drone_free)\\n    return {\\n        \\\"truck_only_makespan_min\\\": round(truck_only, 1),\\n        \\\"joint_makespan_min\\\": round(final_makespan, 1),\\n        \\\"improvement_min\\\": round(truck_only - final_makespan, 1),\\n        \\\"truck_route\\\": route,\\n        \\\"sorties\\\": sorties\\n    }\\n\\n\\ndef main():\\n    parser = argparse.ArgumentParser()\\n    parser.add_argument(\\\"--truck\\\", default=\\\"1.csv\\\", help=\\\"solid graph csv for truck\\\")\\n    parser.add_argument(\\\"--drone\\\", default=\\\"2.csv\\\", help=\\\"solid+dashed graph csv for drone\\\")\\n    parser.add_argument(\\\"--demands\\\", default=\\\"3.csv\\\", help=\\\"demands csv\\\")\\n    parser.add_argument(\\\"--depot\\\", default=\\\"9\\\")\\n    args = parser.parse_args()\\n\\n    truck_df = parse_upper_tri_csv(args.truck)\\n    drone_df = parse_upper_tri_csv(args.drone)\\n    demands = parse_demands_csv(args.demands, n_nodes_guess=truck_df.shape[0])\\n\\n    res = makespan_greedy(truck_df, drone_df, demands, depot=args.depot)\\n    print(\\\"=== RESULT ===\\\")\\n    print(\\\"Truck-only makespan (min):\\\", res[\\\"truck_only_makespan_min\\\"])\\n    print(\\\"Joint (truck+drone) makespan (min):\\\", res[\\\"joint_makespan_min\\\"])\\n    print(\\\"Improvement (min):\\\", res[\\\"improvement_min\\\"])\\n    print(\\\"Truck route after insertions:\\\", \\\" -> \\\".join(res[\\\"truck_route\\\"]))\\n    print(\\\"\\\\\\\\nAccepted UAV sorties (pred/succ; makes"
+    }
+  } ]
+}
+2025-11-13T19:26:50.406+08:00 DEBUG 28908 --- [tor-http-nio-19] c.e.infra.FinalAnswerStreamManager       : [FASM] stream complete id=step-33fe123d-6c0c-4173-9312-1fdc5b873281:decision
+2025-11-13T19:26:50.408+08:00 DEBUG 28908 --- [tor-http-nio-19] c.e.m.C.selectMaxSeq                     : ==>  Preparing: SELECT COALESCE(MAX(seq), 0) FROM conversation_messages WHERE user_id = ? AND conversation_id = ? AND step_id = ?
+2025-11-13T19:26:50.408+08:00 DEBUG 28908 --- [tor-http-nio-19] c.e.m.C.selectMaxSeq                     : ==> Parameters: u1(String), c_8koygc8h(String), step-33fe123d-6c0c-4173-9312-1fdc5b873281(String)
+2025-11-13T19:26:50.414+08:00 DEBUG 28908 --- [tor-http-nio-19] c.e.m.C.selectMaxSeq                     : <==      Total: 1
+2025-11-13T19:26:50.416+08:00 DEBUG 28908 --- [tor-http-nio-19] c.e.m.C.upsertMessage                    : ==>  Preparing: INSERT INTO conversation_messages (user_id, conversation_id, role, content, payload, message_timestamp, step_id, seq, state, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP(6)) ON DUPLICATE KEY UPDATE content = VALUES(content), payload = VALUES(payload), message_timestamp = VALUES(message_timestamp)
+2025-11-13T19:26:50.416+08:00 DEBUG 28908 --- [tor-http-nio-19] c.e.m.C.upsertMessage                    : ==> Parameters: u1(String), c_8koygc8h(String), assistant(String), 现在运行您提供的代码：(String), {"stepId":"step-33fe123d-6c0c-4173-9312-1fdc5b873281","tool_calls":[{"id":"call_00_6m7vs58oTr0ELzJ3j7A1YMkx","type":"function","function":{"name":"python_exec","arguments":"{}"}}],"source":"model","type":"assistant_decision"}(String), null, step-33fe123d-6c0c-4173-9312-1fdc5b873281(String), 8(Integer), DRAFT(String)
+2025-11-13T19:26:50.421+08:00 DEBUG 28908 --- [tor-http-nio-19] c.e.m.C.upsertMessage                    : <==    Updates: 1
+2025-11-13T19:26:50.421+08:00 DEBUG 28908 --- [tor-http-nio-19] c.e.m.C.selectCreatedAt                  : ==>  Preparing: SELECT created_at FROM conversation_messages WHERE user_id = ? AND conversation_id = ? AND step_id = ? AND seq = ? LIMIT 1
+2025-11-13T19:26:50.421+08:00 DEBUG 28908 --- [tor-http-nio-19] c.e.m.C.selectCreatedAt                  : ==> Parameters: u1(String), c_8koygc8h(String), step-33fe123d-6c0c-4173-9312-1fdc5b873281(String), 8(Integer)
+2025-11-13T19:26:50.423+08:00 DEBUG 28908 --- [tor-http-nio-19] c.e.m.C.selectCreatedAt                  : <==      Total: 1
+2025-11-13T19:26:50.424+08:00 DEBUG 28908 --- [tor-http-nio-19] c.e.a.A.findLastHashByConversationAt     : ==>  Preparing: SELECT h FROM ( SELECT hash AS h, created_at AS ts FROM conversation_messages WHERE user_id = ? AND conversation_id = ? AND hash IS NOT NULL AND created_at <= ? UNION ALL SELECT hash AS h, created_at AS ts FROM tool_executions WHERE conversation_id = ? AND hash IS NOT NULL AND created_at <= ? ) t ORDER BY ts DESC LIMIT 1
+2025-11-13T19:26:50.424+08:00 DEBUG 28908 --- [tor-http-nio-19] c.e.a.A.findLastHashByConversationAt     : ==> Parameters: u1(String), c_8koygc8h(String), 2025-11-13T11:26:50.399304(LocalDateTime), c_8koygc8h(String), 2025-11-13T11:26:50.399304(LocalDateTime)
+2025-11-13T19:26:50.428+08:00 DEBUG 28908 --- [tor-http-nio-19] c.e.a.A.findLastHashByConversationAt     : <==      Total: 1
+2025-11-13T19:26:50.428+08:00 DEBUG 28908 --- [tor-http-nio-19] c.e.a.A.updateMessageAuditByKey          : ==>  Preparing: UPDATE conversation_messages SET prev_hash = ?, hash = ?, audit_canonical = ? WHERE user_id = ? AND conversation_id = ? AND step_id = ? AND seq = ? LIMIT 1
+2025-11-13T19:26:50.428+08:00 DEBUG 28908 --- [tor-http-nio-19] c.e.a.A.updateMessageAuditByKey          : ==> Parameters: 0c8e208638e011a78a2f23316d7edff104fab8d00556b5414a67d00d005a22fc(String), 9f0186df93cf5cca3944a40a51dc761315aac1391ac8d8ca6bd12d6af191a414(String), {"content":"现在运行您提供的代码：","conversationId":"c_8koygc8h","role":"assistant","seq":8,"stepId":"step-33fe123d-6c0c-4173-9312-1fdc5b873281","ts":"2025-11-13T11:26:50.399304","type":"message","userId":"u1"}(String), u1(String), c_8koygc8h(String), step-33fe123d-6c0c-4173-9312-1fdc5b873281(String), 8(Integer)
+2025-11-13T19:26:50.431+08:00 DEBUG 28908 --- [tor-http-nio-19] c.e.a.A.updateMessageAuditByKey          : <==    Updates: 1
+2025-11-13T19:26:50.436+08:00 DEBUG 28908 --- [tor-http-nio-19] c.e.s.impl.DecisionServiceSpringAi       : [memory] decision draft persisted: user=u1 conv=c_8koygc8h step=step-33fe123d-6c0c-4173-9312-1fdc5b873281 tcs=1
+2025-11-13T19:26:50.437+08:00 DEBUG 28908 --- [undedElastic-22] c.e.s.impl.ToolExecutionPipelineImpl     : [TOOL-PIPE] fallbackArgs={userId=u1, conversationId=c_8koygc8h}
+2025-11-13T19:26:50.437+08:00 DEBUG 28908 --- [undedElastic-22] com.example.tools.AiToolExecutor         : Executing 1 tool call(s)
+2025-11-13T19:26:50.437+08:00 DEBUG 28908 --- [undedElastic-22] com.example.tools.AiToolExecutor         : Executing tool call id=call_00_6m7vs58oTr0ELzJ3j7A1YMkx name=python_exec
+2025-11-13T19:26:50.437+08:00 DEBUG 28908 --- [undedElastic-22] com.example.tools.ToolRegistry           : Lookup tool 'python_exec'
+2025-11-13T19:26:50.437+08:00 DEBUG 28908 --- [undedElastic-22] com.example.tools.ToolRegistry           : Resolved tool 'python_exec' via exact match
+2025-11-13T19:26:50.437+08:00 DEBUG 28908 --- [undedElastic-22] com.example.tools.AiToolExecutor         : [DEDUP-CHECK] tool=python_exec enabled=true force=false userId=u1 convId=c_8koygc8h ttl=600
+2025-11-13T19:26:50.438+08:00 DEBUG 28908 --- [undedElastic-22] com.example.tools.AiToolExecutor         : [DEDUP-ARGS] tool=python_exec ignore=[requestId, nonce, timestamp] raw={"userId":"u1","conversationId":"c_8koygc8h","user_id":"u1","conversation_id":"c_8koygc8h"} canon={"conversationId":"c_8koygc8h","conversation_id":"c_8koygc8h","userId":"u1","user_id":"u1"} hash=d98bb46f993b22bbfddd8d048949b2f683aead48b9a6286642ca1bbad8505903
+2025-11-13T19:26:50.438+08:00 DEBUG 28908 --- [undedElastic-22] com.example.tools.AiToolExecutor         : [DEDUP-LOOKUP] tool=python_exec user=u1 conv=c_8koygc8h hash=d98bb46f993b22bbfddd8d048949b2f683aead48b9a6286642ca1bbad8505903
+2025-11-13T19:26:50.438+08:00 DEBUG 28908 --- [undedElastic-22] c.e.tools.support.ToolDeduplicator       : [MAP-LOOKUP] user=u1 conv=c_8koygc8h tool=python_exec hash=d98bb46f993b22bbfddd8d048949b2f683aead48b9a6286642ca1bbad8505903
+2025-11-13T19:26:50.438+08:00 DEBUG 28908 --- [undedElastic-22] c.e.m.T.findValidSuccess                 : ==>  Preparing: SELECT * FROM tool_executions WHERE user_id = ? AND conversation_id = ? AND tool_name = ? AND args_hash = ? AND status = 'SUCCESS' AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP(6)) ORDER BY created_at DESC LIMIT 1
+2025-11-13T19:26:50.438+08:00 DEBUG 28908 --- [undedElastic-22] c.e.m.T.findValidSuccess                 : ==> Parameters: u1(String), c_8koygc8h(String), python_exec(String), d98bb46f993b22bbfddd8d048949b2f683aead48b9a6286642ca1bbad8505903(String)
+2025-11-13T19:26:50.439+08:00 DEBUG 28908 --- [undedElastic-22] c.e.m.T.findValidSuccess                 : <==      Total: 0
+2025-11-13T19:26:50.439+08:00 DEBUG 28908 --- [undedElastic-22] c.e.tools.support.ToolDeduplicator       : [MAP-LOOKUP-RET] hit=false
+2025-11-13T19:26:50.439+08:00 DEBUG 28908 --- [undedElastic-22] com.example.tools.AiToolExecutor         : [DEDUP-MISS] tool=python_exec hash=d98bb46f993b22bbfddd8d048949b2f683aead48b9a6286642ca1bbad8505903 -> execute
+2025-11-13T19:26:50.440+08:00 DEBUG 28908 --- [undedElastic-22] c.e.t.impl.docker.PythonContainerPool    : docker$ docker ps --format {{.Names}}
+2025-11-13T19:26:50.502+08:00 DEBUG 28908 --- [undedElastic-22] c.e.t.impl.docker.PythonContainerPool    : docker$ docker ps --format {{.Names}}
+2025-11-13T19:26:50.566+08:00 DEBUG 28908 --- [undedElastic-22] c.e.t.impl.docker.PythonContainerPool    : docker$ docker exec -w /ws/conv-d7c1eeedb0a5 javelin-py-bb82030dbc2b /ws/.venv/bin/python -X utf8 -u -B main.py
+2025-11-13T19:26:50.769+08:00 DEBUG 28908 --- [undedElastic-22] com.example.tools.AiToolExecutor         : [EXEC-OK] tool=python_exec branch=dedup payloadLen=39 sample={"stdout":"","stderr":"","exit_code":0}
+2025-11-13T19:26:50.769+08:00 DEBUG 28908 --- [undedElastic-22] com.example.tools.AiToolExecutor         : [DEDUP-SAVE] tool=python_exec user=u1 conv=c_8koygc8h hash=d98bb46f993b22bbfddd8d048949b2f683aead48b9a6286642ca1bbad8505903 ttl=600
+2025-11-13T19:26:50.770+08:00 DEBUG 28908 --- [undedElastic-22] c.e.m.ToolExecutionMapper.upsertSuccess  : ==>  Preparing: INSERT INTO tool_executions (user_id, conversation_id, tool_name, args_hash, status, args_json, result_json, expires_at) VALUES (?, ?, ?, ?, 'SUCCESS', ?, ?, ?) ON DUPLICATE KEY UPDATE result_json = VALUES(result_json), expires_at = VALUES(expires_at), updated_at = CURRENT_TIMESTAMP
+2025-11-13T19:26:50.771+08:00 DEBUG 28908 --- [undedElastic-22] c.e.m.ToolExecutionMapper.upsertSuccess  : ==> Parameters: u1(String), c_8koygc8h(String), python_exec(String), d98bb46f993b22bbfddd8d048949b2f683aead48b9a6286642ca1bbad8505903(String), {"userId":"u1","conversationId":"c_8koygc8h","user_id":"u1","conversation_id":"c_8koygc8h"}(String), {"stdout":"","stderr":"","exit_code":0}(String), 2025-11-13T19:36:50.770466800(LocalDateTime)
+2025-11-13T19:26:50.772+08:00 DEBUG 28908 --- [undedElastic-22] c.e.m.ToolExecutionMapper.upsertSuccess  : <==    Updates: 1
+2025-11-13T19:26:50.773+08:00 DEBUG 28908 --- [undedElastic-22] c.e.m.T.findLatestCreatedAt              : ==>  Preparing: SELECT MAX(created_at) FROM tool_executions WHERE conversation_id = ? AND tool_name = ? AND args_hash = ? /* 如果表里有 user_id，建议再加一条避免跨用户碰撞 */ AND user_id = ?
+2025-11-13T19:26:50.773+08:00 DEBUG 28908 --- [undedElastic-22] c.e.m.T.findLatestCreatedAt              : ==> Parameters: c_8koygc8h(String), python_exec(String), d98bb46f993b22bbfddd8d048949b2f683aead48b9a6286642ca1bbad8505903(String), u1(String)
+2025-11-13T19:26:50.774+08:00 DEBUG 28908 --- [undedElastic-22] c.e.m.T.findLatestCreatedAt              : <==      Total: 1
+2025-11-13T19:26:50.774+08:00 DEBUG 28908 --- [undedElastic-22] c.e.a.A.findLastHashByConversationAt     : ==>  Preparing: SELECT h FROM ( SELECT hash AS h, created_at AS ts FROM conversation_messages WHERE user_id = ? AND conversation_id = ? AND hash IS NOT NULL AND created_at <= ? UNION ALL SELECT hash AS h, created_at AS ts FROM tool_executions WHERE conversation_id = ? AND hash IS NOT NULL AND created_at <= ? ) t ORDER BY ts DESC LIMIT 1
+2025-11-13T19:26:50.774+08:00 DEBUG 28908 --- [undedElastic-22] c.e.a.A.findLastHashByConversationAt     : ==> Parameters: u1(String), c_8koygc8h(String), 2025-11-13T11:26:50.754728(LocalDateTime), c_8koygc8h(String), 2025-11-13T11:26:50.754728(LocalDateTime)
+2025-11-13T19:26:50.777+08:00 DEBUG 28908 --- [undedElastic-22] c.e.a.A.findLastHashByConversationAt     : <==      Total: 1
+2025-11-13T19:26:50.778+08:00 DEBUG 28908 --- [undedElastic-22] c.e.a.AuditMapper.updateLatestToolAudit  : ==>  Preparing: UPDATE tool_executions SET prev_hash = ?, hash = ?, audit_canonical = ? WHERE conversation_id = ? AND tool_name = ? AND args_hash = ? ORDER BY created_at DESC LIMIT 1
+2025-11-13T19:26:50.778+08:00 DEBUG 28908 --- [undedElastic-22] c.e.a.AuditMapper.updateLatestToolAudit  : ==> Parameters: 9f0186df93cf5cca3944a40a51dc761315aac1391ac8d8ca6bd12d6af191a414(String), e69555bc6dac3a3c4c6e59d97c36eefac151fb9ed03fb39c2b8fd4ce317b93de(String), {"args_hash":"d98bb46f993b22bbfddd8d048949b2f683aead48b9a6286642ca1bbad8505903","conversationId":"c_8koygc8h","data_hash":"834bd866d4de57d467f58d46ba410997908d107c3e81e4e8857b94199e1ea5c3","name":"python_exec","reused":false,"status":"SUCCESS","stepId":null,"type":"tool","userId":"u1"}(String), c_8koygc8h(String), python_exec(String), d98bb46f993b22bbfddd8d048949b2f683aead48b9a6286642ca1bbad8505903(String)
+2025-11-13T19:26:50.780+08:00 DEBUG 28908 --- [undedElastic-22] c.e.a.AuditMapper.updateLatestToolAudit  : <==    Updates: 1
+2025-11-13T19:26:50.780+08:00 DEBUG 28908 --- [undedElastic-22] c.e.tools.support.ToolDeduplicator       : Persisted tool success: user=u1 conv=c_8koygc8h tool=python_exec ttl=600s
+2025-11-13T19:26:50.787+08:00 DEBUG 28908 --- [undedElastic-22] com.example.tools.AiToolExecutor         : Tool 'python_exec' call id=call_00_6m7vs58oTr0ELzJ3j7A1YMkx persisted SUCCESS, payloadLength=39
+2025-11-13T19:26:50.787+08:00 DEBUG 28908 --- [undedElastic-22] com.example.tools.AiToolExecutor         : Completed execution of 1 tool call(s)
+2025-11-13T19:26:50.787+08:00 DEBUG 28908 --- [undedElastic-22] c.e.m.C.selectMaxSeq                     : ==>  Preparing: SELECT COALESCE(MAX(seq), 0) FROM conversation_messages WHERE user_id = ? AND conversation_id = ? AND step_id = ?
+2025-11-13T19:26:50.787+08:00 DEBUG 28908 --- [undedElastic-22] c.e.m.C.selectMaxSeq                     : ==> Parameters: u1(String), c_8koygc8h(String), step-33fe123d-6c0c-4173-9312-1fdc5b873281(String)
+2025-11-13T19:26:50.788+08:00 DEBUG 28908 --- [undedElastic-22] c.e.m.C.selectMaxSeq                     : <==      Total: 1
+2025-11-13T19:26:50.790+08:00 DEBUG 28908 --- [undedElastic-22] c.e.m.C.upsertMessage                    : ==>  Preparing: INSERT INTO conversation_messages (user_id, conversation_id, role, content, payload, message_timestamp, step_id, seq, state, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP(6)) ON DUPLICATE KEY UPDATE content = VALUES(content), payload = VALUES(payload), message_timestamp = VALUES(message_timestamp)
+2025-11-13T19:26:50.790+08:00 DEBUG 28908 --- [undedElastic-22] c.e.m.C.upsertMessage                    : ==> Parameters: u1(String), c_8koygc8h(String), tool(String), {"payload":{"stdout":"","stderr":"","exit_code":0},"_executedKey":"python_exec::{\"conversationId\":\"c_8koygc8h\",\"userId\":\"u1\"}","args":"{\"conversationId\":\"c_8koygc8h\",\"userId\":\"u1\"}"}(String), {"name":"python_exec","tool_call_id":"call_00_6m7vs58oTr0ELzJ3j7A1YMkx","reused":false,"status":"SUCCESS","args":"{\"conversationId\":\"c_8koygc8h\",\"userId\":\"u1\"}","data":{"payload":{"stdout":"","stderr":"","exit_code":0},"_executedKey":"python_exec::{\"conversationId\":\"c_8koygc8h\",\"userId\":\"u1\"}","args":"{\"conversationId\":\"c_8koygc8h\",\"userId\":\"u1\"}"},"empty":false}(String), null, step-33fe123d-6c0c-4173-9312-1fdc5b873281(String), 9(Integer), DRAFT(String)
+2025-11-13T19:26:50.792+08:00 DEBUG 28908 --- [undedElastic-22] c.e.m.C.upsertMessage                    : <==    Updates: 1
+2025-11-13T19:26:50.792+08:00 DEBUG 28908 --- [undedElastic-22] c.e.m.C.selectCreatedAt                  : ==>  Preparing: SELECT created_at FROM conversation_messages WHERE user_id = ? AND conversation_id = ? AND step_id = ? AND seq = ? LIMIT 1
+2025-11-13T19:26:50.792+08:00 DEBUG 28908 --- [undedElastic-22] c.e.m.C.selectCreatedAt                  : ==> Parameters: u1(String), c_8koygc8h(String), step-33fe123d-6c0c-4173-9312-1fdc5b873281(String), 9(Integer)
+2025-11-13T19:26:50.793+08:00 DEBUG 28908 --- [undedElastic-22] c.e.m.C.selectCreatedAt                  : <==      Total: 1
+2025-11-13T19:26:50.793+08:00 DEBUG 28908 --- [undedElastic-22] c.e.a.A.findLastHashByConversationAt     : ==>  Preparing: SELECT h FROM ( SELECT hash AS h, created_at AS ts FROM conversation_messages WHERE user_id = ? AND conversation_id = ? AND hash IS NOT NULL AND created_at <= ? UNION ALL SELECT hash AS h, created_at AS ts FROM tool_executions WHERE conversation_id = ? AND hash IS NOT NULL AND created_at <= ? ) t ORDER BY ts DESC LIMIT 1
+2025-11-13T19:26:50.794+08:00 DEBUG 28908 --- [undedElastic-22] c.e.a.A.findLastHashByConversationAt     : ==> Parameters: u1(String), c_8koygc8h(String), 2025-11-13T11:26:50.773952(LocalDateTime), c_8koygc8h(String), 2025-11-13T11:26:50.773952(LocalDateTime)
+2025-11-13T19:26:50.795+08:00 DEBUG 28908 --- [undedElastic-22] c.e.a.A.findLastHashByConversationAt     : <==      Total: 1
+2025-11-13T19:26:50.795+08:00 DEBUG 28908 --- [undedElastic-22] c.e.a.A.updateMessageAuditByKey          : ==>  Preparing: UPDATE conversation_messages SET prev_hash = ?, hash = ?, audit_canonical = ? WHERE user_id = ? AND conversation_id = ? AND step_id = ? AND seq = ? LIMIT 1
+2025-11-13T19:26:50.795+08:00 DEBUG 28908 --- [undedElastic-22] c.e.a.A.updateMessageAuditByKey          : ==> Parameters: e69555bc6dac3a3c4c6e59d97c36eefac151fb9ed03fb39c2b8fd4ce317b93de(String), 995b097a37c71f02f01b4cc4ae44e96851a055a8a82fe195834b2be4d8103a95(String), {"content":"{\"payload\":{\"stdout\":\"\",\"stderr\":\"\",\"exit_code\":0},\"_executedKey\":\"python_exec::{\\\"conversationId\\\":\\\"c_8koygc8h\\\",\\\"userId\\\":\\\"u1\\\"}\",\"args\":\"{\\\"conversationId\\\":\\\"c_8koygc8h\\\",\\\"userId\\\":\\\"u1\\\"}\"}","conversationId":"c_8koygc8h","role":"tool","seq":9,"stepId":"step-33fe123d-6c0c-4173-9312-1fdc5b873281","ts":"2025-11-13T11:26:50.773952","type":"message","userId":"u1"}(String), u1(String), c_8koygc8h(String), step-33fe123d-6c0c-4173-9312-1fdc5b873281(String), 9(Integer)
+2025-11-13T19:26:50.798+08:00 DEBUG 28908 --- [undedElastic-22] c.e.a.A.updateMessageAuditByKey          : <==    Updates: 1
+2025-11-13T19:26:50.804+08:00 DEBUG 28908 --- [undedElastic-22] c.e.m.C.selectFinalContext               : ==>  Preparing: SELECT id, user_id, conversation_id, role, content, payload, message_timestamp, step_id, seq, state, created_at FROM conversation_messages WHERE user_id = ? AND conversation_id = ? AND state = 'FINAL' ORDER BY created_at ASC, seq ASC, id ASC LIMIT ?
+2025-11-13T19:26:50.804+08:00 DEBUG 28908 --- [undedElastic-22] c.e.m.C.selectFinalContext               : ==> Parameters: u1(String), c_8koygc8h(String), 100(Integer)
+2025-11-13T19:26:50.806+08:00 DEBUG 28908 --- [undedElastic-22] c.e.m.C.selectFinalContext               : <==      Total: 0
+2025-11-13T19:26:50.806+08:00 DEBUG 28908 --- [undedElastic-22] c.e.m.C.selectStepIdContext              : ==>  Preparing: SELECT role, content, payload, step_id, seq, created_at, state FROM conversation_messages WHERE user_id = ? AND conversation_id = ? AND step_id = ? ORDER BY seq , created_at LIMIT ?
+2025-11-13T19:26:50.806+08:00 DEBUG 28908 --- [undedElastic-22] c.e.m.C.selectStepIdContext              : ==> Parameters: u1(String), c_8koygc8h(String), step-33fe123d-6c0c-4173-9312-1fdc5b873281(String), 100(Integer)
+2025-11-13T19:26:50.810+08:00 DEBUG 28908 --- [undedElastic-22] c.e.m.C.selectStepIdContext              : <==      Total: 9
+2025-11-13T19:26:50.811+08:00 DEBUG 28908 --- [undedElastic-22] c.e.infra.FinalAnswerStreamManager       : [FASM] stream start id=step-33fe123d-6c0c-4173-9312-1fdc5b873281:decision
+2025-11-13T19:26:50.812+08:00 DEBUG 28908 --- [undedElastic-20] com.example.ai.SpringAiChatGateway       : [TRACE M3] gateway.in  size=10 last=tool :: {"stderr":"","stdout":"","exit_code":0} digest=222feab66ba3087b68ad50a687c14fe005c7592a767108f8b03eb2c9ab205c1d
+2025-11-13T19:26:50.812+08:00 DEBUG 28908 --- [undedElastic-20] com.example.ai.SpringAiChatGateway       : [TRACE M4] gateway.out size=10 last=ToolResponseMessage{responses=[ToolResponse[id=call_00_6m7vs58oTr0ELzJ3j7A1YMkx, name=python_exec, responseData={"stderr":"","stdout":"","exit_code":0}]], messageType=TOOL, metadata={messageType=TOOL}}
+2025-11-13T19:26:50.812+08:00 DEBUG 28908 --- [undedElastic-20] com.example.ai.SpringAiChatGateway       : [TOOLS-ALLOWED(after toggles)] [open_url, python_exec, web_fetch, web_search]
+2025-11-13T19:26:50.812+08:00 DEBUG 28908 --- [undedElastic-20] com.example.ai.SpringAiChatGateway       : [CB-REGISTERED(after toggles)] server=[python_exec, web_fetch, web_search], client-def=[open_url]
+2025-11-13T19:26:50.812+08:00 DEBUG 28908 --- [undedElastic-20] com.example.ai.SpringAiChatGateway       : [TOOL-CHOICE] auto
+2025-11-13T19:26:50.812+08:00 DEBUG 28908 --- [undedElastic-20] com.example.ai.SpringAiChatGateway       : [AI-REQ] {
+  "model" : "deepseek-chat",
+  "tool_choice" : "auto",
+  "proxy_tool_calls" : true,
+  "parallel_tool_calls" : false,
+  "tool_context" : { },
+  "messages" : [ {
+    "role" : "system",
+    "content" : "You are a helpful assistant who writes concise, accurate answers. If tools are available and helpful, propose function-calling tool calls."
+  }, {
+    "role" : "user",
+    "content" : "你能运行这个代码吗\n# schedule_makespan.py\n# -*- coding: utf-8 -*-\n\"\"\"\nMakespan-aware greedy UAV insertion (pred/succ only).\n- Truck graph: solid edges (1.csv), speed 50 km/h\n- Drone graph: solid + dashed (2.csv), speed 75 km/h\n- Demands: 3.csv (node -> kg); only nodes with q_u <= 50 are eligible for UAV\n- Single UAV, single flight at a time, max flight time 70 minutes\n- UAV must start/end at nodes on the truck route; service exactly one node u per sortie\n- Accept a sortie only if it reduces GLOBAL makespan:\n    new_makespan = max(new_truck_finish_time, UAV_finish_time) < current_makespan\n\"\"\"\n\nimport io\nimport math\nimport argparse\nfrom heapq import heappush, heappop\nimport pandas as pd\nimport numpy as np\n\n\n# ---------- Robust CSV parsers ----------\ndef parse_upper_tri_csv(path: str) -> pd.DataFrame:\n    \"\"\"Parse a distance-like matrix csv (may be upper-triangular).\n    Fills symmetric entries and sets diag=0. Index/cols -> '1'..'n' (str).\"\"\"\n    with open(path, \"r\", encoding=\"utf-8\") as f:\n        lines = [ln.strip(\"\\r\\n\") for ln in f.readlines()]\n    cleaned = []\n    for ln in lines:\n        if not ln.strip():\n            continue\n        if \",\" not in ln:\n            continue\n        cleaned.append(ln)\n    if not cleaned:\n        raise RuntimeError(f\"No CSV-looking lines in {path}\")\n    df = pd.read_csv(io.StringIO(\"\\n\".join(cleaned)), header=0)\n    # normalize headers\n    df.columns = [str(c).strip().replace(\"\\ufeff\", \"\") for c in df.columns]\n    # numeric\n    df = df.apply(pd.to_numeric, errors=\"coerce\")\n    n = df.shape[0]\n    df.index = [str(i + 1) for i in range(n)]\n    # symmetrize and zero diag\n    for i in range(n):\n        for j in range(n):\n            if i == j:\n                df.iat[i, j] = 0.0\n            else:\n                a = df.iat[i, j]\n                b = df.iat[j, i] if (j < df.shape[0] and i < df.shape[1]) else np.nan\n                if pd.isna(a) and not pd.isna(b):\n                    df.iat[i, j] = b\n                elif not pd.isna(a) and not pd.isna(b):\n                    df.iat[i, j] = min(a, b)\n    df.columns = [str(i + 1) for i in range(n)]\n    return df\n\n\ndef parse_demands_csv(path: str, n_nodes_guess=14) -> dict:\n    \"\"\"Parse demands in flexible formats: (node,demand) or a single row listing.\"\"\"\n    try:\n        df = pd.read_csv(path, header=0)\n        # case: explicit node/demand columns\n        node_col = None\n        demand_col = None\n        for c in df.columns:\n            low = str(c).strip().lower()\n            if low in (\"node\", \"节点\", \"点\", \"id\"):\n                node_col = c\n            if low in (\"demand\", \"需求\", \"需求kg\", \"q\", \"q_kg\"):\n                demand_col = c\n        if node_col and demand_col:\n            m = {}\n            for _, row in df.iterrows():\n                try:\n                    node = str(int(row[node_col]))\n                    val = float(row[demand_col])\n                    m[node] = val\n                except Exception:\n                    pass\n            return m\n        # case: two columns -> assume node,demand\n        if df.shape[1] == 2:\n            m = {}\n            for _, row in df.iterrows():\n                try:\n                    node = str(int(row.iloc[0]))\n                    val = float(row.iloc[1])\n                    m[node] = val\n                except Exception:\n                    pass\n            return m\n        # case: single row listing demands for 1..n\n        if df.shape[0] == 1 and df.shape[1] >= n_nodes_guess:\n            m = {}\n            for j in range(df.shape[1]):\n                m[str(j + 1)] = float(df.iloc[0, j])\n            return m\n    except Exception:\n        pass\n    # fallback empty\n    return {}\n\n\n# ---------- Graph & shortest paths ----------\ndef to_graph(df: pd.DataFrame) -> dict:\n    \"\"\"Adjacency dict with weights in km.\"\"\"\n    G = {}\n    for i in df.index:\n        row = {}\n        for j in df.columns:\n            val = df.loc[i, j]\n            if pd.notna(val) and float(val) > 0 and i != j:\n                row[j] = float(val)\n        G[i] = row\n    return G\n\n\ndef dijkstra_km(G: dict, s: str, t: str):\n    \"\"\"Shortest path length in km (and retrieve km length only).\"\"\"\n    import heapq\n    INF = float('inf')\n    dist = {v: INF for v in G}\n    dist[s] = 0.0\n    pq = [(0.0, s)]\n    while pq:\n        d, u = heapq.heappop(pq)\n        if d != dist[u]:\n            continue\n        if u == t:\n            break\n        for v, w in G[u].items():\n            nd = d + w\n            if nd < dist[v]:\n                dist[v] = nd\n                heapq.heappush(pq, (nd, v))\n    return dist[t]\n\n\ndef all_pairs_shortest_time_minutes(G: dict, speed_kmph: float) -> pd.DataFrame:\n    \"\"\"Dijkstra for each source; return minutes matrix.\"\"\"\n    labels = sorted(G.keys(), key=lambda x: int(x))\n    INF = float('inf')\n    out = {s: {t: INF for t in labels} for s in labels}\n    for s in labels:\n        # single-source dijkstra in 'hours'\n        dist = {v: INF for v in labels}\n        dist[s] = 0.0\n        pq = [(0.0, s)]\n        while pq:\n            d, u = heappop(pq)\n            if d != dist[u]:\n                continue\n            for v, w_km in G[u].items():\n                nd = d + (w_km / max(speed_kmph, 1e-9))\n                if nd < dist[v]:\n                    dist[v] = nd\n                    heappush(pq, (nd, v))\n        for t in labels:\n            out[s][t] = dist[t] * 60.0  # minutes\n    df = pd.DataFrame(out).T\n    df.index = labels\n    df.columns = labels\n    return df\n\n\ndef minutes_truck_km(km: float) -> float:\n    return km / 50.0 * 60.0\n\n\n# ---------- Base route: NN + 2-opt on T^v ----------\ndef nearest_neighbor_route(labels, depot, Tmin):\n    unvisited = set(labels)\n    route = [depot]\n    unvisited.remove(depot)\n    cur = depot\n    while unvisited:\n        best, best_t = None, float('inf')\n        for v in unvisited:\n            t = float(Tmin.loc[cur, v])\n            if t < best_t:\n                best, best_t = v, t\n        if best is None or not np.isfinite(best_t):\n            raise RuntimeError(f\"Unreachable from {cur}\")\n        route.append(best)\n        unvisited.remove(best)\n        cur = best\n    route.append(depot)\n    return route\n\n\ndef route_time_minutes(route, Tmin):\n    tot = 0.0\n    for i in range(len(route) - 1):\n        t = float(Tmin.loc[route[i], route[i + 1]])\n        if not np.isfinite(t):\n            raise RuntimeError(f\"Edge {route[i]}->{route[i+1]} unreachable\")\n        tot += t\n    return tot\n\n\ndef two_opt(route, Tmin, max_iters=2000):\n    assert route[0] == route[-1]\n    best = route[:]\n    best_cost = route_time_minutes(best, Tmin)\n    n = len(best) - 1\n    improved = True\n    it = 0\n    while improved and it < max_iters:\n        improved = False\n        it += 1\n        for i in range(1, n - 1):\n            for j in range(i + 1, n):\n                if j - i == 1:\n                    continue\n                cand = best[:i] + best[i:j][::-1] + best[j:]\n                cost = route_time_minutes(cand, Tmin)\n                if cost + 1e-9 < best_cost:\n                    best, best_cost = cand, cost\n                    improved = True\n                    break\n            if improved:\n                break\n    return best\n\n\n# ---------- Build S, A on the real solid graph ----------\ndef build_S_A(route_nodes, G_truck):\n    S = []\n    for i in range(len(route_nodes) - 1):\n        a, b = route_nodes[i], route_nodes[i + 1]\n        km = dijkstra_km(G_truck, a, b)\n        if not np.isfinite(km):\n            raise RuntimeError(f\"No truck path between {a} and {b}\")\n        S.append(minutes_truck_km(km))\n    A = [0.0]\n    for t in S:\n        A.append(A[-1] + t)\n    return S, A\n\n\n# ---------- Makespan-aware greedy (pred/succ only) ----------\ndef makespan_greedy(truck_df, drone_df, demands_map, depot=\"9\"):\n    G_truck = to_graph(truck_df)\n    G_drone = to_graph(drone_df)\n    T_truck_m = all_pairs_shortest_time_minutes(G_truck, 50.0)\n    T_drone_m = all_pairs_shortest_time_minutes(G_drone, 75.0)\n\n    labels = sorted(T_truck_m.index.tolist(), key=lambda x: int(x))\n    if depot not in labels:\n        raise RuntimeError(f\"Depot '{depot}' not in labels\")\n\n    # truck-only base route\n    init_route = nearest_neighbor_route(labels, depot, T_truck_m)\n    opt_route = two_opt(init_route, T_truck_m)\n\n    # S, A on the real solid network\n    S_cur, A_cur = build_S_A(opt_route, G_truck)\n    truck_only = A_cur[-1]\n\n    # prepare demands; default 0\n    demands = {v: float(demands_map.get(v, 0.0)) for v in labels}\n    MAX_PAYLOAD = 50.0\n    MAX_FLIGHT = 70.0\n    drone_free = 0.0\n    sorties = []\n\n    def idx_map(r): return {r[i]: i for i in range(len(r))}\n\n    def eligible_nodes(r):\n        return [u for u in r[1:-1]\n                if u != depot and 0.0 < demands.get(u, 0.0) <= MAX_PAYLOAD]\n\n    def test_candidate(route, S, A, drone_free_time, u):\n        m = idx_map(route)\n        idx = m[u]\n        i_idx = idx - 1\n        k_idx = idx + 1\n        if i_idx < 0 or idx >= len(S):\n            return None\n        i_node = route[i_idx]\n        k_node = route[k_idx]\n        # UAV round flight duration\n        Td = float(T_drone_m.loc[i_node, u] + T_drone_m.loc[u, k_node])\n        if not np.isfinite(Td) or Td > MAX_FLIGHT + 1e-9:\n            return None\n        # local delta if skipping u\n        t_pred_u = S[i_idx]\n        t_u_succ = S[idx]\n        Tv_ps = float(T_truck_m.loc[i_node, k_node])\n        delta = (t_pred_u + t_u_succ) - Tv_ps\n        if delta <= 1e-9:\n            return None\n\n        # current makespan\n        current = max(A[-1], drone_free_time)\n        # schedule\n        start = max(A[i_idx], drone_free_time)\n        finish = start + Td\n\n        # new route after removing u\n        new_route = route[:i_idx + 1] + [k_node] + route[k_idx + 1:]\n        new_S, new_A = build_S_A(new_route, G_truck)\n\n        new_truck_finish = new_A[-1]\n        new_makespan = max(new_truck_finish, finish)\n        gain = current - new_makespan  # >0 better\n        return {\n            \"u\": u,\n            \"i_idx\": i_idx, \"k_idx\": k_idx,\n            \"i_node\": i_node, \"k_node\": k_node,\n            \"Td\": Td, \"delta\": delta, \"Tv_ps\": Tv_ps,\n            \"start\": start, \"finish\": finish,\n            \"new_route\": new_route, \"new_S\": new_S, \"new_A\": new_A,\n            \"new_truck_finish\": new_truck_finish,\n            \"current\": current, \"new\": new_makespan, \"gain\": gain\n        }\n\n    route = opt_route[:]\n    while True:\n        best = None\n        for u in eligible_nodes(route):\n            cand = test_candidate(route, S_cur, A_cur, drone_free, u)\n            if cand is None:\n                continue\n            if cand[\"gain\"] > 1e-6 and (best is None or cand[\"gain\"] > best[\"gain\"]):\n                best = cand\n        if best is None:\n            break\n        # accept best\n        sorties.append({\n            \"serve\": best[\"u\"],\n            \"from\": best[\"i_node\"],\n            \"to\": best[\"k_node\"],\n            \"start_min\": round(best[\"start\"], 1),\n            \"finish_min\": round(best[\"finish\"], 1),\n            \"flight_min\": round(best[\"Td\"], 1),\n            \"makespan_gain_min\": round(best[\"gain\"], 1)\n        })\n        drone_free = best[\"finish\"]\n        route = best[\"new_route\"]\n        S_cur, A_cur = best[\"new_S\"], best[\"new_A\"]\n\n    final_makespan = max(A_cur[-1], drone_free)\n    return {\n        \"truck_only_makespan_min\": round(truck_only, 1),\n        \"joint_makespan_min\": round(final_makespan, 1),\n        \"improvement_min\": round(truck_only - final_makespan, 1),\n        \"truck_route\": route,\n        \"sorties\": sorties\n    }\n\n\ndef main():\n    parser = argparse.ArgumentParser()\n    parser.add_argument(\"--truck\", default=\"1.csv\", help=\"solid graph csv for truck\")\n    parser.add_argument(\"--drone\", default=\"2.csv\", help=\"solid+dashed graph csv for drone\")\n    parser.add_argument(\"--demands\", default=\"3.csv\", help=\"demands csv\")\n    parser.add_argument(\"--depot\", default=\"9\")\n    args = parser.parse_args()\n\n    truck_df = parse_upper_tri_csv(args.truck)\n    drone_df = parse_upper_tri_csv(args.drone)\n    demands = parse_demands_csv(args.demands, n_nodes_guess=truck_df.shape[0])\n\n    res = makespan_greedy(truck_df, drone_df, demands, depot=args.depot)\n    print(\"=== RESULT ===\")\n    print(\"Truck-only makespan (min):\", res[\"truck_only_makespan_min\"])\n    print(\"Joint (truck+drone) makespan (min):\", res[\"joint_makespan_min\"])\n    print(\"Improvement (min):\", res[\"improvement_min\"])\n    print(\"Truck route after insertions:\", \" -> \".join(res[\"truck_route\"]))\n    print(\"\\nAccepted UAV sorties (pred/succ; makespan-aware):\")\n    for s in res[\"sorties\"]:\n        print(s)\n\n\nif __name__ == \"__main__\":\n    main()"
+  }, {
+    "role" : "assistant",
+    "content" : "",
+    "tool_calls" : [ {
+      "id" : "call_00_fRMyHJXKXv8MDnLoNgW5AgOe",
+      "type" : "function",
+      "function" : {
+        "name" : "python_exec",
+        "arguments" : "{\"code\":\"import os\\nprint(\\\"当前目录内容:\\\")\\nfor f in os.listdir('.'):\\n    print(f)\"}"
+      }
+    } ]
+  }, {
+    "role" : "tool",
+    "tool_call_id" : "call_00_fRMyHJXKXv8MDnLoNgW5AgOe",
+    "name" : "python_exec",
+    "content" : "{\"stderr\":\"\",\"stdout\":\"当前目录内容:\\nmain.py\\n\",\"exit_code\":0}"
+  }, {
+    "role" : "assistant",
+    "content" : "",
+    "tool_calls" : [ {
+      "id" : "call_00_qYBKYItNpwxQXo4a6deoyRbu",
+      "type" : "function",
+      "function" : {
+        "name" : "python_exec",
+        "arguments" : "{\"code\":\"# 创建测试CSV文件\\nimport pandas as pd\\nimport numpy as np\\n\\n# 1.csv - 卡车图（实线边）\\nnodes = 14\\ntruck_matrix = np.random.randint(10, 50, size=(nodes, nodes))\\ntruck_matrix = (truck_matrix + truck_matrix.T) / 2  # 对称化\\nnp.fill_diagonal(truck_matrix, 0)\\n\\ntruck_df = pd.DataFrame(truck_matrix, \\n                       index=[str(i+1) for i in range(nodes)],\\n                       columns=[str(i+1) for i in range(nodes)])\\ntruck_df.to_csv('1.csv', index=True)\\nprint(\\\"创建 1.csv (卡车图)\\\")\\n\\n# 2.csv - 无人机图（实线+虚线边）\\ndrone_matrix = truck_matrix.copy()\\n# 添加一些额外的边（虚线）\\nfor i in range(nodes):\\n    for j in range(i+1, nodes):\\n        if np.random.random() < 0.3:  # 30%概率添加额外边\\n            drone_matrix[i,j] = drone_matrix[j,i] = min(drone_matrix[i,j], np.random.randint(5, 30))\\n\\ndrone_df = pd.DataFrame(drone_matrix,\\n                       index=[str(i+1) for i in range(nodes)],\\n                       columns=[str(i+1) for i in range(nodes)])\\ndrone_df.to_csv('2.csv', index=True)\\nprint(\\\"创建 2.csv (无人机图)\\\")\\n\\n# 3.csv - 需求\\n# 随机生成需求，部分节点需求<=50（无人机可服务）\\ndemands = {}\\nfor i in range(1, nodes+1):\\n    if np.random.random() < 0.7:  # 70%节点有需求\\n        demands[str(i)] = np.random.randint(1, 80)\\n\\n# 保存为CSV\\ndemands_df = pd.DataFrame([demands])\\ndemands_df.to_csv('3.csv', index=False)\\nprint(\\\"创建 3.csv (需求)\\\")\\n\\nprint(\\\"\\\\n检查文件:\\\")\\nfor f in ['1.csv', '2.csv', '3.csv']:\\n    if os.path.exists(f):\\n        print(f\\\"{f}: 存在\\\")\\n        df = pd.read_csv(f)\\n        print(f\\\"  形状: {df.shape}\\\")\\n        if f == '3.csv':\\n            print(f\\\"  需求数据: {dict(df.iloc[0])}\\\")\"}"
+      }
+    } ]
+  }, {
+    "role" : "tool",
+    "tool_call_id" : "call_00_qYBKYItNpwxQXo4a6deoyRbu",
+    "name" : "python_exec",
+    "content" : "{\"message\":\"python exit 1\\nTraceback (most recent call last):\\n  File \\\"/ws/conv-d7c1eeedb0a5/main.py\\\", line 45, in <module>\\n    if os.path.exists(f):\\n       ^^\\nNameError: name 'os' is not defined\\n\"}"
+  }, {
+    "role" : "assistant",
+    "content" : "",
+    "tool_calls" : [ {
+      "id" : "call_00_wCQI7rWHZQiW79ZbF0Ku2hWr",
+      "type" : "function",
+      "function" : {
+        "name" : "python_exec",
+        "arguments" : "{\"code\":\"# 创建测试CSV文件\\nimport pandas as pd\\nimport numpy as np\\nimport os\\n\\n# 1.csv - 卡车图（实线边）\\nnodes = 14\\ntruck_matrix = np.random.randint(10, 50, size=(nodes, nodes))\\ntruck_matrix = (truck_matrix + truck_matrix.T) / 2  # 对称化\\nnp.fill_diagonal(truck_matrix, 0)\\n\\ntruck_df = pd.DataFrame(truck_matrix, \\n                       index=[str(i+1) for i in range(nodes)],\\n                       columns=[str(i+1) for i in range(nodes)])\\ntruck_df.to_csv('1.csv', index=True)\\nprint(\\\"创建 1.csv (卡车图)\\\")\\n\\n# 2.csv - 无人机图（实线+虚线边）\\ndrone_matrix = truck_matrix.copy()\\n# 添加一些额外的边（虚线）\\nfor i in range(nodes):\\n    for j in range(i+1, nodes):\\n        if np.random.random() < 0.3:  # 30%概率添加额外边\\n            drone_matrix[i,j] = drone_matrix[j,i] = min(drone_matrix[i,j], np.random.randint(5, 30))\\n\\ndrone_df = pd.DataFrame(drone_matrix,\\n                       index=[str(i+1) for i in range(nodes)],\\n                       columns=[str(i+1) for i in range(nodes)])\\ndrone_df.to_csv('2.csv', index=True)\\nprint(\\\"创建 2.csv (无人机图)\\\")\\n\\n# 3.csv - 需求\\n# 随机生成需求，部分节点需求<=50（无人机可服务）\\ndemands = {}\\nfor i in range(1, nodes+1):\\n    if np.random.random() < 0.7:  # 70%节点有需求\\n        demands[str(i)] = np.random.randint(1, 80)\\n\\n# 保存为CSV\\ndemands_df = pd.DataFrame([demands])\\ndemands_df.to_csv('3.csv', index=False)\\nprint(\\\"创建 3.csv (需求)\\\")\\n\\nprint(\\\"\\\\n检查文件:\\\")\\nfor f in ['1.csv', '2.csv', '3.csv']:\\n    if os.path.exists(f):\\n        print(f\\\"{f}: 存在\\\")\\n        df = pd.read_csv(f)\\n        print(f\\\"  形状: {df.shape}\\\")\\n        if f == '3.csv':\\n            print(f\\\"  需求数据: {dict(df.iloc[0])}\\\")\"}"
+      }
+    } ]
+  }, {
+    "role" : "tool",
+    "tool_call_id" : "call_00_wCQI7rWHZQiW79ZbF0Ku2hWr",
+    "name" : "python_exec",
+    "content" : "{\"stderr\":\"\",\"stdout\":\"创建 1.csv (卡车图)\\n创建 2.csv (无人机图)\\n创建 3.csv (需求)\\n\\n检查文件:\\n1.csv: 存在\\n  形状: (14, 15)\\n2.csv: 存在\\n  形状: (14, 15)\\n3.csv: 存在\\n  形状: (1, 10)\\n  需求数据: {'1': np.int64(67), '3': np.int64(61), '4': np.int64(36), '5': np.int64(25), '6': np.int64(25), '7': np.int64(20), '8': np.int64(12), '9': np.int64(39), '11': np.int64(27), '12': np.int64(61)}\\n\",\"exit_code\":0}"
+  }, {
+    "role" : "assistant",
+    "content" : "",
+    "tool_calls" : [ {
+      "id" : "call_00_6m7vs58oTr0ELzJ3j7A1YMkx",
+      "type" : "function",
+      "function" : {
+        "name" : "python_exec",
+        "arguments" : "{}"
+      }
+    } ]
+  }, {
+    "role" : "tool",
+    "tool_call_id" : "call_00_6m7vs58oTr0ELzJ3j7A1YMkx",
+    "name" : "python_exec",
+    "content" : "{\"stderr\":\"\",\"stdout\":\"\",\"exit_code\":0}"
+  } ],
+  "tools" : [ {
+    "type" : "function",
+    "function" : {
+      "name" : "open_url",
+      "description" : "在客户端打开网页",
+      "parameters" : {
+        "type" : "object",
+        "properties" : {
+          "url" : {
+            "type" : "string"
+          }
+        },
+        "required" : [ "url" ]
+      }
+    },
+    "x-execTarget" : "client"
+  }, {
+    "type" : "function",
+    "function" : {
+      "name" : "python_exec",
+      "description" : "在 Docker 中执行 Python；自动检测本次新增文件并上传到 MinIO，返回文件下载信息。",
+      "parameters" : {
+        "type" : "object",
+        "required" : [ "code" ],
+        "properties" : {
+          "user_id" : {
+            "description" : "用户ID",
+            "type" : "string"
+          },
+          "conversation_id" : {
+            "description" : "对话ID",
+            "type" : "string"
+          },
+          "step_id" : {
+            "description" : "可选：步骤ID",
+            "type" : "string"
+          },
+          "code" : {
+            "description" : "Python 源码",
+            "type" : "string"
+          },
+          "pip" : {
+            "items" : {
+              "type" : "string"
+            },
+            "type" : "array",
+            "description" : "需要安装的 pip 包"
+          },
+          "files" : {
+            "items" : {
+              "type" : "object",
+              "required" : [ "path" ],
+              "properties" : {
+                "path" : {
+                  "type" : "string"
+                },
+                "content" : {
+                  "type" : "string"
+                }
+              }
+            },
+            "type" : "array",
+            "description" : "执行前写入的文件"
+          },
+          "return_files" : {
+            "items" : {
+              "type" : "string"
+            },
+            "type" : "array",
+            "description" : "执行后要内联回读的小文本相对路径"
+          },
+          "timeout_ms" : {
+            "minimum" : 1,
+            "type" : "integer",
+            "description" : "超时（毫秒）"
+          }
+        }
+      }
+    },
+    "x-execTarget" : "server"
+  }, {
+    "type" : "function",
+    "function" : {
+      "name" : "web_fetch",
+      "description" : "Fetch a web page and extract readable text (title + excerpt) for analysis.",
+      "parameters" : {
+        "type" : "object",
+        "properties" : {
+          "url" : {
+            "description" : "Absolute HTTP(S) URL",
+            "type" : "string",
+            "minLength" : 1
+          },
+          "max_chars" : {
+            "default" : 2000,
+            "maximum" : 20000,
+            "minimum" : 200,
+            "type" : "integer"
+          },
+          "selector" : {
+            "description" : "Optional CSS selector (jsoup if available)",
+            "type" : "string"
+          }
+        },
+        "required" : [ "url" ]
+      }
+    },
+    "x-execTarget" : "server"
+  }, {
+    "type" : "function",
+    "function" : {
+      "name" : "web_search",
+      "description" : "Search the web/news/images using Serper.dev. Use it for fresh facts, news, or web pages.",
+      "parameters" : {
+        "type" : "object",
+        "properties" : {
+          "q" : {
+            "description" : "query string",
+            "type" : "string",
+            "minLength" : 1
+          },
+          "type" : {
+            "type" : "string",
+            "enum" : [ "web", "news", "images" ],
+            "default" : "web"
+          },
+          "top_k" : {
+            "default" : 5,
+            "maximum" : 10,
+            "minimum" : 1,
+            "type" : "integer"
+          },
+          "lang" : {
+            "description" : "language preference (hl)",
+            "type" : "string"
+          },
+          "country" : {
+            "description" : "country/region (gl)",
+            "type" : "string"
+          },
+          "page" : {
+            "minimum" : 1,
+            "type" : "integer",
+            "default" : 1
+          },
+          "site" : {
+            "description" : "site limiter, e.g., github.com",
+            "type" : "string"
+          },
+          "safe" : {
+            "type" : "boolean",
+            "default" : true
+          }
+        },
+        "required" : [ "q" ]
+      }
+    },
+    "x-execTarget" : "server"
+  } ],
+  "compatibility" : "OPENAI"
+}
+你看 ，就是有时候不会把llm的参数给工具

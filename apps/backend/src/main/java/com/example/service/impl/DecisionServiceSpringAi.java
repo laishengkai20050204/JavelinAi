@@ -247,8 +247,13 @@ public class DecisionServiceSpringAi implements DecisionService {
 
     @SuppressWarnings("unchecked")
     private Map<String, Object> safeParseMap(String json) {
-        try { return mapper.readValue(json, Map.class); }
-        catch (Exception ignore) { return Map.of(); }
+        try {
+            return mapper.readValue(json, Map.class);
+        } catch (Exception ex) {
+            String preview = truncate(json, 512);
+            log.error("[decision] invalid tool arguments JSON, fallback to empty map. preview={}", preview, ex);
+            return Map.of();
+        }
     }
 
     private void persistAssistantDecisionDraft(

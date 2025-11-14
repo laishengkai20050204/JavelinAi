@@ -317,7 +317,7 @@ public class SinglePathChatService {
 
     private Mono<StepTransition> execPending(StepState st) {
         int concurrency = 4;
-        Duration perToolTimeout = Duration.ofSeconds(10);
+        Duration perToolTimeout = Duration.ofSeconds(30);
 
         return Flux.fromIterable(st.pendingServerCalls())
                 .flatMapSequential(call -> execOneToolWithIdempotency(st, call)

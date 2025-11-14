@@ -71,13 +71,15 @@ public class AiToolExecutor {
                     new TypeReference<Map<String, Object>>() {}
             );
 
-            // 2) 合并上下文作用域参数（确�?userId / conversationId 一定存在且不可被覆盖）
+// 2) 合并上下文作用域参数（确定userId / conversationId 一定存在且不可被覆盖）
             if (fallbackArgs != null) {
+                // 先覆盖受保护 key（userId, conversationId）
                 fallbackArgs.forEach((key, value) -> {
                     if (value != null && PROTECTED_SCOPE_KEYS.contains(key)) {
                         args.put(key, value);
                     }
                 });
+                // 再补充其他 key（模型参数优先）
                 fallbackArgs.forEach((key, value) -> {
                     if (!PROTECTED_SCOPE_KEYS.contains(key)) {
                         args.putIfAbsent(key, value);
@@ -85,21 +87,35 @@ public class AiToolExecutor {
                 });
             }
 
+            // 2.5 ★★★ 在这里统一 userId / user_id, conversationId / conversation_id
+            Object userIdVal = args.get("userId");
+            if (userIdVal == null) userIdVal = args.get("user_id");
+            Object convIdVal = args.get("conversationId");
+            if (convIdVal == null) convIdVal = args.get("conversation_id");
+
+            if (userIdVal != null) {
+                args.put("userId", userIdVal);
+                args.put("user_id", userIdVal);
+            }
+            if (convIdVal != null) {
+                args.put("conversationId", convIdVal);
+                args.put("conversation_id", convIdVal);
+            }
+
+            // 3) 现在再读 userId / conversationId，保证这俩一定是归一化后的值
             String userId = Objects.toString(args.get("userId"), null);
             String conversationId = Objects.toString(args.get("conversationId"), null);
-            boolean force = Boolean.TRUE.equals(args.get("force")); // 工具统一支持 force
+            boolean force = Boolean.TRUE.equals(args.get("force"));
             int ttlSeconds = dedupProps.getDefaultTtlSeconds();
             if (args.get("ttlSeconds") instanceof Number n && n.intValue() > 0) {
                 ttlSeconds = n.intValue();
             }
 
-            // ★【哨�?】四个关键条�?
             log.debug("[DEDUP-CHECK] tool={} enabled={} force={} userId={} convId={} ttl={}",
                     tool.name(), dedupProps.isEnabled(), force, userId, conversationId, ttlSeconds);
 
             String contentJsonToReturn;
 
-            // 3) 若启用去重，且具�?userId/convId 且不�?force，则尝试复用
             if (dedupProps.isEnabled() && !force && userId != null && conversationId != null) {
 
                 // 3.1 计算参数指纹（忽�?timestamp/requestId/nonce 等抖动字段）
@@ -108,11 +124,9 @@ public class AiToolExecutor {
                 JsonNode canonicalArgs = JsonCanonicalizer.normalize(mapper, rawArgsNode, ignore);
                 String argsHash = dedup.fingerprint(tool.name(), canonicalArgs);
 
-                // ★【哨�?】入参与归一�?
                 log.debug("[DEDUP-ARGS] tool={} ignore={} raw={} canon={} hash={}",
                         tool.name(), ignore, rawArgsNode, canonicalArgs, argsHash);
 
-                // ★【哨�?a】开始查复用
                 log.debug("[DEDUP-LOOKUP] tool={} user={} conv={} hash={}",
                         tool.name(), userId, conversationId, argsHash);
 
@@ -121,7 +135,6 @@ public class AiToolExecutor {
                 if (cached.isPresent()) {
                     contentJsonToReturn = cached.get();
 
-                    // ★【哨�?b】命中复�?
                     log.debug("[DEDUP-HIT] tool={} hash={} reused=true",
                             tool.name(), argsHash);
 
@@ -133,10 +146,8 @@ public class AiToolExecutor {
                     continue;
                 }
 
-                // ★【哨�?c】未命中，准备执行并保存
                 log.debug("[DEDUP-MISS] tool={} hash={} -> execute", tool.name(), argsHash);
 
-                // 3.3 未命�?-> 执行并入�?
                 ToolResult result;
                 try {
                     result = tool.execute(args);
@@ -146,13 +157,11 @@ public class AiToolExecutor {
                 }
                 contentJsonToReturn = mapper.writeValueAsString(result.data());
 
-                // ★【哨�?】执行成功（去重分支�?
                 log.debug("[EXEC-OK] tool={} branch=dedup payloadLen={} sample={}",
                         tool.name(),
                         (contentJsonToReturn == null ? 0 : contentJsonToReturn.length()),
                         contentJsonToReturn == null ? "null" : contentJsonToReturn.substring(0, Math.min(120, contentJsonToReturn.length())));
 
-                // ★【哨�?a】即将保存（去重分支�?
                 log.debug("[DEDUP-SAVE] tool={} user={} conv={} hash={} ttl={}",
                         tool.name(), userId, conversationId, argsHash, ttlSeconds);
 
@@ -170,7 +179,6 @@ public class AiToolExecutor {
                 continue;
             }
 
-            // 4) 未启用去�?�?�?userId/convId �?force=true -> 直接执行
             ToolResult result;
             try {
                 result = tool.execute(args);
@@ -206,7 +214,6 @@ public class AiToolExecutor {
                     log.error("[AUDIT-ERROR] tool={} err={}", tool.name(), e.toString(), e);
                 }
             } else {
-                // ★【哨�?b'】为什么没保存（缺 ids�?
                 log.debug("[AUDIT-SKIP] tool={} reason=missing ids userId={} convId={}", tool.name(), userId, conversationId);
             }
 

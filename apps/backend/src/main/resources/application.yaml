@@ -12,7 +12,7 @@ ai:
     enabled: true               # enable optional thinking mode
 #    level: medium               # optional: send low/medium/high when the upstream supports it
   tools:
-    max-loops: 10
+    max-loops: 100
     dedup:
       enabled: true
       default-ttl-seconds: 600
@@ -40,13 +40,25 @@ ai:
       ssrf-guard-enabled: true
     python:
       enabled: true
-      pythonCmd: python
-      timeout: 15s
-      maxOutputBytes: 65536
-      allowPip: false
-      useDocker: false       # 若你的宿主是 Linux 且装了 Docker，建议 true
-      dockerImage: python:3.11-slim
-      denyNetwork: true
+      use-docker: true
+      docker-image: "javelin-py:files"
+      # —— 每用户一容器
+      per-user-container: true
+      # —— 工作区根目录（宿主机路径）
+      workspace-root: "/var/javelin/workspaces/pyexec"
+      # —— 容器安全与资源
+      docker:
+        user: "65534:65534"      # nobody
+        read-only-root: true
+        cpus: "2.0"
+        memory: "2g"
+        extra-create-args: "--pids-limit 256 --tmpfs /tmp --tmpfs /var/tmp --security-opt no-new-privileges"
+      # —— 网络策略
+      deny-network-after-setup: false  # 装完依赖后自动断网
+      # —— 容器空闲回收
+      idle-ttl-minutes: 60
+      # —— 允许 pip（在容器内执行；若禁网，会临时接入网络）
+      allow-pip: true
   memory:
     storage: database        # set to in-memory to use the in-memory implementation
     max-messages: 100
@@ -103,3 +115,13 @@ sse:
   heartbeat-every: PT20S   # 20 秒心跳
   step-ttl: PT10M          # 10 分钟无活动自动清理
   janitor-every: PT60S     # 60 秒扫一次
+
+storage:
+  minio:
+    endpoint: http://127.0.0.1:9000   # 你容器对宿主机暴露的地址
+    accessKey: admin             # 改成你的 MINIO_ROOT_USER
+    secretKey: Lsk20050204             # 改成你的 MINIO_ROOT_PASSWORD
+    region: us-east-1                 # 保持默认即可
+    secure: false                     # http=false / https=true
+    defaultBucket: javelin-exec        # 建议预设一个默认桶
+    presignExpirySeconds: 3600        # 预签名URL有效期（秒）

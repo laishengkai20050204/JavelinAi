@@ -49,6 +49,11 @@ public class FinalAnswerStreamManager {
         String id;
         String name;
         final StringBuilder args = new StringBuilder(256);
+        String lastValidJson;
+
+        String resolvedArguments() {
+            return lastValidJson != null ? lastValidJson : args.toString();
+        }
     }
 
     static final class Holder {
@@ -101,7 +106,24 @@ public class FinalAnswerStreamManager {
                                     if (fnName != null && !fnName.isBlank()) acc.name = fnName;
 
                                     String argsPart = fn.path("arguments").asText(null);
-                                    if (argsPart != null && !argsPart.isEmpty()) acc.args.append(argsPart);
+                                    if (argsPart != null && !argsPart.isEmpty()) {
+                                        if (isStandaloneJson(argsPart)) {
+                                            if (acc.args.length() > 0) {
+                                                log.debug("[FASM] tool_call arguments chunk replaced with standalone JSON id={} idx={} prevLen={} chunkLen={}",
+                                                        acc.id, idx, acc.args.length(), argsPart.length());
+                                            }
+                                            acc.args.setLength(0);
+                                            acc.args.append(argsPart);
+                                            acc.lastValidJson = argsPart;
+                                        } else {
+                                            if (acc.args.length() > 0) {
+                                                log.debug("[FASM] tool_call arguments chunk appended id={} idx={} prevLen={} chunkLen={}",
+                                                        acc.id, idx, acc.args.length(), argsPart.length());
+                                            }
+                                            acc.args.append(argsPart);
+                                            captureIfValid(acc);
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -153,9 +175,13 @@ public class FinalAnswerStreamManager {
                     for (var e : h.tools.entrySet()) {
                         ToolAcc a = e.getValue();
                         if (a == null) continue;
+                        if (a.lastValidJson == null) {
+                            log.warn("[FASM] tool_call arguments never resolved to valid JSON id={} name={} currentLen={}",
+                                    a.id, a.name, a.args.length());
+                        }
                         Map<String,Object> fn = new LinkedHashMap<>();
                         fn.put("name", a.name == null ? "" : a.name);
-                        fn.put("arguments", a.args.toString());
+                        fn.put("arguments", a.resolvedArguments());
                         Map<String,Object> item = new LinkedHashMap<>();
                         if (a.id != null) item.put("id", a.id);
                         item.put("type", "function");
@@ -164,6 +190,28 @@ public class FinalAnswerStreamManager {
                     }
                     return new Aggregated(h.buf.toString(), toolCalls);
                 }));
+    }
+
+    private void captureIfValid(ToolAcc acc) {
+        if (acc == null || acc.args.isEmpty()) return;
+        try {
+            mapper.readTree(acc.args.toString());
+            acc.lastValidJson = acc.args.toString();
+        } catch (Exception ignore) {
+            // ignore until full JSON arrives
+        }
+    }
+
+    private boolean isStandaloneJson(String text) {
+        if (text == null) return false;
+        String trimmed = text.trim();
+        if (!(trimmed.startsWith("{") && trimmed.endsWith("}"))) return false;
+        try {
+            mapper.readTree(trimmed);
+            return true;
+        } catch (Exception ignore) {
+            return false;
+        }
     }
 
     /** 手动清理 */
