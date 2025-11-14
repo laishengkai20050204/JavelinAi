@@ -2,7 +2,7 @@ package com.example.tools.impl;
 
 import com.example.ai.tools.AiToolComponent;
 import com.example.api.dto.ToolResult;
-import com.example.storage.MinioStorageService;
+import com.example.storage.StorageService;
 import com.example.tools.AiTool;
 import com.example.tools.impl.docker.DockerEphemeralRunner;
 import com.example.tools.impl.docker.PythonContainerPool;
@@ -35,7 +35,7 @@ import java.util.*;
 public class PythonExecTool implements AiTool {
 
     private final PythonContainerPool containerPool;
-    private final MinioStorageService minio; // 注入你已有的 MinioStorageService
+    private final StorageService storageService; // 注入你已有的 MinioStorageService
 
     @Value("${ai.tools.python.workspace-root:/var/javelin/workspaces/pyexec}")
     private String workspaceRoot;
@@ -199,22 +199,22 @@ public class PythonExecTool implements AiTool {
 
             Map<String, Object> generatedFiles = new LinkedHashMap<>();
             if (!newFiles.isEmpty()) {
-                String bucket = minio.getDefaultBucket();
+                String bucket = storageService.getDefaultBucket();
                 // 确保桶存在（阻塞等一下即可）
-                minio.ensureBucket(bucket).block(Duration.ofSeconds(10));
+                storageService.ensureBucket(bucket).block(Duration.ofSeconds(10));
 
                 for (String rel : newFiles) {
                     Path p = convDir.resolve(rel);
                     if (!Files.exists(p) || !Files.isRegularFile(p)) continue;
                     long size = Files.size(p);
 
-                    String objectKey = minio.buildObjectKey(userId, convId, rel.replace('\\','/'));
+                    String objectKey = storageService.buildObjectKey(userId, convId, rel.replace('\\','/'));
 
                     try {
                         // 上传
-                        minio.uploadFile(bucket, objectKey, p).block(Duration.ofMinutes(2));
+                        storageService.uploadFile(bucket, objectKey, p).block(Duration.ofMinutes(2));
                         // 预签名 1 小时
-                        String url = minio.presignGet(bucket, objectKey, Duration.ofHours(1))
+                        String url = storageService.presignGet(bucket, objectKey, Duration.ofHours(1))
                                 .block(Duration.ofSeconds(5));
 
                         Map<String, Object> meta = new LinkedHashMap<>();

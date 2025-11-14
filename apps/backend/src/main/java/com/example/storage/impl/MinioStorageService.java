@@ -1,5 +1,7 @@
-package com.example.storage;
+package com.example.storage.impl;
 
+import com.example.storage.MinioProps;
+import com.example.storage.StorageService;
 import io.minio.*;
 import io.minio.errors.ErrorResponseException;
 import io.minio.errors.MinioException;
@@ -23,7 +25,7 @@ import java.time.ZoneOffset;
 import java.util.concurrent.TimeUnit;
 
 @Service
-public class MinioStorageService {
+public class MinioStorageService implements StorageService {
 
     private final MinioClient client;
     private final MinioProps props;
