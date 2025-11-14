@@ -31,6 +31,11 @@ public class DecisionServiceImpl implements DecisionService {
         return Mono.just(ModelDecision.empty());
     }
 
+    @Override
+    public void clearStep(String stepId) {
+
+    }
+
     private void persistAssistantDecisionDraft(
             ConversationMemoryService memoryService,
             ObjectMapper objectMapper,

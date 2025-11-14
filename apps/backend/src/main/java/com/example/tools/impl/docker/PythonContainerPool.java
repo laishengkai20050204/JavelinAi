@@ -393,6 +393,7 @@ public class PythonContainerPool {
                 log.info("GC python container {} (idle)", uc.name());
                 run(Arrays.asList("docker","rm","-f", uc.name()), Duration.ofSeconds(15));
                 pool.remove(uc.userId());
+                locks.remove(uc.userId);
             }
         } catch (Exception e) {
             log.warn("gc idle error", e);

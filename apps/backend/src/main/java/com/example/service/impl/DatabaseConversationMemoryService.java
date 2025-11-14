@@ -14,6 +14,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
@@ -32,6 +33,7 @@ public class DatabaseConversationMemoryService implements ConversationMemoryServ
 
     private static final TypeReference<Map<String, Object>> MAP_TYPE =
             new TypeReference<Map<String, Object>>() {};
+    private static final int MEDIUMTEXT_MAX_BYTES = 16_777_215; // MySQL MEDIUMTEXT limit (~16 MB)
 
     private final ConversationMemoryMapper mapper;
     private final ObjectMapper objectMapper;
@@ -83,13 +85,14 @@ public class DatabaseConversationMemoryService implements ConversationMemoryServ
     public void upsertMessage(String userId, String conversationId,
                               String role, String content, String payloadJson,
                               String stepId, int seq, String state) {
+        String boundedContent = enforceMediumTextLimit(content);
         try {
-            mapper.upsertMessage(userId, conversationId, role, content, payloadJson, null, stepId, seq, state);
+            mapper.upsertMessage(userId, conversationId, role, boundedContent, payloadJson, null, stepId, seq, state);
 
             LocalDateTime createdAtUtc = mapper.selectCreatedAt(userId, conversationId, stepId, seq);
             var auditPayload = AuditHasher.buildMessageAuditPayload(
                     userId, conversationId, stepId,
-                    role, /*name*/ null, content,
+                    role, /*name*/ null, boundedContent,
                     createdAtUtc.toString(), seq, /*model*/ null
             );
             String canonical = AuditHasher.canonicalize(objectMapper, auditPayload);
@@ -178,7 +181,7 @@ public class DatabaseConversationMemoryService implements ConversationMemoryServ
                                   String state) {
         Map<String, Object> safeMessage = message == null ? Map.of() : new HashMap<>(message);
         String role = asString(safeMessage.get("role"));
-        String content = extractContent(safeMessage);
+        String content = enforceMediumTextLimit(extractContent(safeMessage));
         String timestamp = extractTimestamp(safeMessage);
         String payloadJson = null;
         try {
@@ -377,6 +380,18 @@ public class DatabaseConversationMemoryService implements ConversationMemoryServ
             return builder.length() > 0 ? builder.toString() : null;
         }
         return null;
+    }
+
+    private String enforceMediumTextLimit(String content) {
+        if (content == null) {
+            return null;
+        }
+        int byteLength = content.getBytes(StandardCharsets.UTF_8).length;
+        if (byteLength > MEDIUMTEXT_MAX_BYTES) {
+            throw new IllegalArgumentException(String.format(
+                    "content length %d bytes exceeds MEDIUMTEXT limit %d bytes", byteLength, MEDIUMTEXT_MAX_BYTES));
+        }
+        return content;
     }
 
     private String extractTimestamp(Map<String, Object> message) {

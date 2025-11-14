@@ -8,4 +8,6 @@ import java.util.Map;
 
 public interface ClientResultIngestor {
     Mono<Void> ingest(StepState st, List<Map<String,Object>> clientResults);
+
+    void clearByStep(String stepId);
 }

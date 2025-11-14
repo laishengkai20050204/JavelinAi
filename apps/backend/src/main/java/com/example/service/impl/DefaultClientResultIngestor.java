@@ -88,4 +88,10 @@ public class DefaultClientResultIngestor implements ClientResultIngestor {
         }).subscribeOn(reactor.core.scheduler.Schedulers.boundedElastic()).then();
     }
 
+    @Override
+    public void clearByStep(String stepId) {
+        if (stepId == null) return;
+        ingestedResultKeys.removeIf(k -> k.startsWith(stepId + "|"));
+    }
+
 }

@@ -153,6 +153,12 @@ public class DecisionServiceSpringAi implements DecisionService {
                 });
     }
 
+    @Override
+    public void clearStep(String stepId) {
+        if (stepId == null) return;
+        decisionSeen.remove(stepId);
+    }
+
     private String asString(Object o) { return (o == null) ? null : o.toString(); }
 
     private String extractAssistantDraft(JsonNode root) {
