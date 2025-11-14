@@ -29,7 +29,7 @@ class MinioStorageServiceIntegrationTest {
 
     private static final Logger log = LoggerFactory.getLogger(MinioStorageServiceIntegrationTest.class);
 
-    private final MinioStorageService service;
+    private final StorageService storageService;
     private final MinioClient client;
 
     @Value("${storage.minio.defaultBucket}")
@@ -38,8 +38,8 @@ class MinioStorageServiceIntegrationTest {
     private String uploadedKey;
 
     @Autowired
-    MinioStorageServiceIntegrationTest(MinioStorageService service, MinioClient client) {
-        this.service = service;
+    MinioStorageServiceIntegrationTest(StorageService storageService, MinioClient client) {
+        this.storageService = storageService;
         this.client = client;
     }
 
@@ -48,7 +48,7 @@ class MinioStorageServiceIntegrationTest {
         try {
             // 任意调用确保能够连通 MinIO
             client.listBuckets();
-            service.ensureBucket(defaultBucket).block(Duration.ofSeconds(10));
+            storageService.ensureBucket(defaultBucket).block(Duration.ofSeconds(10));
         } catch (Exception ex) {
             assumeTrue(false, "无法连接 MinIO: " + ex.getMessage());
         }
@@ -58,7 +58,7 @@ class MinioStorageServiceIntegrationTest {
     void cleanup() {
         if (uploadedKey == null) return;
         try {
-            service.deleteObject(defaultBucket, uploadedKey)
+            storageService.deleteObject(defaultBucket, uploadedKey)
                     .onErrorResume(err -> {
                         log.warn("删除 MinIO 对象 {} 失败: {}", uploadedKey, err.getMessage());
                         return Mono.empty();
@@ -74,14 +74,14 @@ class MinioStorageServiceIntegrationTest {
         Path localFile = tempDir.resolve("minio-real-upload.txt");
         Files.writeString(localFile, "真实 MinIO 上传测试 @" + Instant.now());
 
-        uploadedKey = service.buildObjectKey("integration", "upload", localFile.getFileName().toString());
+        uploadedKey = storageService.buildObjectKey("integration", "upload", localFile.getFileName().toString());
         log.info("上传真实文件到 MinIO：bucket='{}', key='{}'", defaultBucket, uploadedKey);
 
-        StepVerifier.create(service.uploadFile(defaultBucket, uploadedKey, localFile))
+        StepVerifier.create(storageService.uploadFile(defaultBucket, uploadedKey, localFile))
                 .expectNext(uploadedKey)
                 .verifyComplete();
 
-        StepVerifier.create(service.exists(defaultBucket, uploadedKey))
+        StepVerifier.create(storageService.exists(defaultBucket, uploadedKey))
                 .expectNext(true)
                 .verifyComplete();
     }

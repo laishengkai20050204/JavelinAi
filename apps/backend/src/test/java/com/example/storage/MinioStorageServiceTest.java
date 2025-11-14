@@ -1,5 +1,6 @@
 package com.example.storage;
 
+import com.example.storage.impl.MinioStorageService;
 import io.minio.*;
 import io.minio.errors.*;
 import io.minio.http.Method;
