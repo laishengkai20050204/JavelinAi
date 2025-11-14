@@ -141,6 +141,38 @@ public class PythonContainerPool {
                 String[] extra = props.extraCreateArgs.trim().split("\\s+");
                 for (String t : extra) if (!t.isBlank()) create.add(t);
             }
+
+// ✅ 从宿主机环境读取代理，并适配为 host.docker.internal
+            String httpProxy = firstNonBlank(
+                    System.getenv("HTTP_PROXY"),
+                    System.getenv("http_proxy")
+            );
+            httpProxy = adaptProxyForDocker(httpProxy);
+            if (httpProxy != null && !httpProxy.isBlank()) {
+                create.add("-e"); create.add("HTTP_PROXY=" + httpProxy);
+                create.add("-e"); create.add("http_proxy=" + httpProxy);
+            }
+
+            String httpsProxy = firstNonBlank(
+                    System.getenv("HTTPS_PROXY"),
+                    System.getenv("https_proxy")
+            );
+            httpsProxy = adaptProxyForDocker(httpsProxy);
+            if (httpsProxy != null && !httpsProxy.isBlank()) {
+                create.add("-e"); create.add("HTTPS_PROXY=" + httpsProxy);
+                create.add("-e"); create.add("https_proxy=" + httpsProxy);
+            }
+
+            String noProxy = firstNonBlank(
+                    System.getenv("NO_PROXY"),
+                    System.getenv("no_proxy")
+            );
+            if (noProxy != null && !noProxy.isBlank()) {
+                create.add("-e"); create.add("NO_PROXY=" + noProxy);
+                create.add("-e"); create.add("no_proxy=" + noProxy);
+            }
+
+
             create.add(props.dockerImage);
             create.add("sleep"); create.add("infinity");
             run(create, Duration.ofSeconds(30));
@@ -158,6 +190,47 @@ public class PythonContainerPool {
             return created;
         }
     }
+
+
+    private static String firstNonBlank(String a, String b) {
+        if (a != null && !a.isBlank()) return a;
+        if (b != null && !b.isBlank()) return b;
+        return null;
+    }
+
+    private static String adaptProxyForDocker(String proxy) {
+        if (proxy == null || proxy.isBlank()) return proxy;
+        try {
+            String raw = proxy;
+            String withScheme = raw.contains("://") ? raw : "http://" + raw;
+            java.net.URI uri = new java.net.URI(withScheme);
+            String host = uri.getHost();
+            if (host == null) return proxy;
+            if (!"127.0.0.1".equals(host) && !"localhost".equalsIgnoreCase(host)) {
+                return proxy;
+            }
+            java.net.URI newUri = new java.net.URI(
+                    uri.getScheme(),
+                    uri.getUserInfo(),
+                    "host.docker.internal",
+                    uri.getPort(),
+                    uri.getPath(),
+                    uri.getQuery(),
+                    uri.getFragment()
+            );
+            String result = newUri.toString();
+            if (!raw.contains("://") && result.startsWith("http://")) {
+                return result.substring("http://".length());
+            }
+            return result;
+        } catch (Exception e) {
+            return proxy
+                    .replace("127.0.0.1", "host.docker.internal")
+                    .replace("localhost", "host.docker.internal");
+        }
+    }
+
+
 
     /** 在用户容器中执行命令（工作目录指向 host 子目录的容器内映射） */
     public ExecResult exec(String userId, Path workDirInHost, List<String> argv, Duration timeout) {

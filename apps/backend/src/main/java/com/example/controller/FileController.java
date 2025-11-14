@@ -58,7 +58,8 @@ public class FileController {
                                 buffer.read(bytes);
 
                                 String filename = filePart.filename();
-                                String objectKey = storageService.buildObjectKey(uid, cid, filename);
+                                String objectKey = storageService.buildUserResourceKey(uid, cid, filename);
+
 
                                 MediaType ct = filePart.headers().getContentType();
                                 String contentTypeStr = (ct != null ? ct.toString() : null);
