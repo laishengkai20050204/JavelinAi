@@ -8,6 +8,8 @@ import com.example.api.dto.ToolCall;
 import com.example.api.dto.ToolResult;
 import com.example.config.AiProperties;
 import com.example.infra.StepSseHub;
+import com.example.service.impl.DecisionServiceSpringAi;
+import com.example.service.impl.DefaultClientResultIngestor;
 import com.example.service.impl.StepContextStore;
 import com.example.util.Fingerprint;
 import com.example.util.ToolPayloads;
@@ -94,7 +96,12 @@ public class SinglePathChatService {
             streamMgr.clear(st.stepId());   // ← 新增：清理“最终续写流”的 holder
             sink.complete();
 
-            // 若有：decisionService.clearStep(st.stepId());
+            if (decisionService instanceof DecisionServiceSpringAi ds) {
+                ds.clearStep(st.stepId());
+            }
+            if (clientResultIngestor instanceof DefaultClientResultIngestor dci) {
+                dci.clearByStep(st.stepId());
+            }
             stepStore.clear(st.stepId());
             userDraftSaved.remove("user:" + st.stepId());// ☆ 清理标记
             clientBatchIngested.removeIf(k -> k.startsWith(st.stepId() + "::"));

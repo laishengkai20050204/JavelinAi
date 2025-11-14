@@ -7,4 +7,6 @@ import reactor.core.publisher.Mono;
 
 public interface DecisionService {
     Mono<ModelDecision> decide(StepState st, AssembledContext ctx);
+
+    void clearStep(String stepId);
 }
