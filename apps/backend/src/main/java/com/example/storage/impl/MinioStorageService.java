@@ -41,21 +41,27 @@ public class MinioStorageService implements StorageService {
         return props.getDefaultBucket();
     }
 
-    /** 构建对象键名：建议按照 {userId}/{conversationId}/{fileName} 组织 */
-    public String buildObjectKey(String userId, String conversationId, String fileName) {
+    /** Python 工具输出文件 */
+    public String buildPythonOutputKey(String userId, String conversationId, String fileName) {
         OffsetDateTime now = OffsetDateTime.now(ZoneOffset.UTC);
+        String safeFile = safeFileName(fileName);
         return String.format(
                 "python-outputs/%04d/%02d/%02d/%s/%s/%s",
                 now.getYear(), now.getMonthValue(), now.getDayOfMonth(),
-                safe(userId), safe(conversationId), fileName
+                safe(userId), safe(conversationId), safeFile
         );
     }
 
-    /** ✅ 新增：用户上传的资源文件，固定放在 resources/ 子目录下 */
+    /** 用户上传资源文件 */
     @Override
     public String buildUserResourceKey(String userId, String conversationId, String filename) {
-        // 如果你想目录叫 resource 而不是 resources，这里改成 "resource/" 即可
-        return buildObjectKey(userId, conversationId, "resources/" + filename);
+        OffsetDateTime now = OffsetDateTime.now(ZoneOffset.UTC);
+        String safeFile = safeFileName(filename);
+        return String.format(
+                "user-resources/%04d/%02d/%02d/%s/%s/%s",
+                now.getYear(), now.getMonthValue(), now.getDayOfMonth(),
+                safe(userId), safe(conversationId), safeFile
+        );
     }
 
 

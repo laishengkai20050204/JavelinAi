@@ -43,13 +43,19 @@ public class DockerEphemeralRunner {
     public void ensureVenv(Path userRoot) {
         Path py = userRoot.resolve(".venv").resolve("bin").resolve("python");
         Path pyWin = userRoot.resolve(".venv").resolve("Scripts").resolve("python.exe");
-        if (Files.exists(py) || Files.exists(pyWin)) return; // 已存在
+        if (Files.exists(py) || Files.exists(pyWin)) return; // 已存在就不重建
+
         List<String> cmd = baseRun(userRoot, false); // pip/venv 阶段允许联网
         cmd.add(props.dockerImage);
-        cmd.add("python"); cmd.add("-X"); cmd.add("utf8"); cmd.add("-m"); cmd.add("venv"); cmd.add("/ws/.venv");
+        cmd.add("python"); cmd.add("-X"); cmd.add("utf8");
+        cmd.add("-m"); cmd.add("venv");
+        cmd.add("--system-site-packages");       // ✅ 加这一行
+        cmd.add("/ws/.venv");
+
         ExecResult r = runCapture(cmd, Duration.ofMinutes(2));
         if (r.exitCode() != 0) throw new RuntimeException("create venv failed: " + r.stderr());
     }
+
 
     /** 安装 pip 包（联网） */
     public void pipInstall(Path userRoot, Collection<String> pkgs) {

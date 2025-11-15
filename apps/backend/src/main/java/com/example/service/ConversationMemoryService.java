@@ -32,5 +32,7 @@ public interface ConversationMemoryService {
 
     Integer findMaxSeq(String userId, String conversationId, String stepId);
 
+    Map<String, Object> findMessageById(long id);
+
 
 }

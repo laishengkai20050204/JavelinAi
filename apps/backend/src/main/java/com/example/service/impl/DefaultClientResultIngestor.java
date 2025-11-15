@@ -10,6 +10,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
 import reactor.core.publisher.Mono;
 
 import java.util.*;
@@ -63,6 +64,14 @@ public class DefaultClientResultIngestor implements ClientResultIngestor {
                 payload.put("status", r.status());
                 payload.put("args", argsStr);
                 payload.put("data", data);
+
+                String summaryText = StringUtils.hasText(readableText)
+                        ? readableText
+                        : Optional.ofNullable(ToolPayloads.toJson(data, objectMapper)).orElse("");
+                if (StringUtils.hasText(summaryText)) {
+                    data.putIfAbsent("text", summaryText);
+                    payload.putIfAbsent("message", summaryText);
+                }
 
                 memoryService.upsertMessage(
                         userId, convId,

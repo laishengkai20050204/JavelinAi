@@ -134,7 +134,11 @@
             <version>3.2.3</version>
         </dependency>
 
-
+        <!-- java Time module -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.datatype</groupId>
+            <artifactId>jackson-datatype-jsr310</artifactId>
+        </dependency>
 
     </dependencies>
 

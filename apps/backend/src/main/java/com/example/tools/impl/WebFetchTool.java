@@ -148,17 +148,24 @@ public class WebFetchTool implements AiTool {
                     : extractLight(body.text(), maxChars);
 
 
+            String title = Optional.ofNullable(ex.title).orElse("");
+            String excerpt = Optional.ofNullable(ex.excerpt).orElse("");
+            String summary = summarizeFetchResult(title, excerpt, uri.toString());
+
             Map<String,Object> payload = new LinkedHashMap<>();
             payload.put("url", uri.toString());
-            payload.put("title", Optional.ofNullable(ex.title).orElse(""));
-            payload.put("excerpt", Optional.ofNullable(ex.excerpt).orElse(""));
+            payload.put("title", title);
+            payload.put("excerpt", excerpt);
             payload.put("fetchedAt", java.time.OffsetDateTime.now().toString());
             payload.put("source", "server");
+            payload.put("message", summary);
+            payload.put("text", excerpt);
             if (jsoupAvailable) payload.put("_parser", "jsoup"); else payload.put("_parser", "light");
 
             Map<String,Object> data = new LinkedHashMap<>();
             data.put("payload", payload);
             data.put("_executedKey", executedKey);
+            data.put("text", summary);
 
             return ToolResult.success(null, name(), false, data);
 
@@ -263,6 +270,24 @@ public class WebFetchTool implements AiTool {
                 || ia.isLinkLocalAddress()
                 || ia.isSiteLocalAddress()
                 || ia.isMulticastAddress();
+    }
+
+    private String summarizeFetchResult(String title, String excerpt, String url) {
+        String safeTitle = title == null ? "" : title.trim();
+        String safeExcerpt = excerpt == null ? "" : excerpt.trim();
+        StringBuilder sb = new StringBuilder();
+        if (StringUtils.hasText(safeTitle)) {
+            sb.append("Fetched \"").append(safeTitle).append("\"");
+        } else {
+            sb.append("Fetched web page");
+        }
+        if (StringUtils.hasText(url)) {
+            sb.append(" (").append(url).append(")");
+        }
+        if (StringUtils.hasText(safeExcerpt)) {
+            sb.append(": ").append(truncate(safeExcerpt, 200));
+        }
+        return sb.toString();
     }
 
     // ======= 小工�?=======

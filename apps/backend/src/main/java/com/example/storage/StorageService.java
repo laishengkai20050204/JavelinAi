@@ -14,7 +14,7 @@ public interface StorageService {
     String getDefaultBucket();
 
     /** 根据业务规则构建对象 key */
-    String buildObjectKey(String userId, String conversationId, String fileName);
+    String buildPythonOutputKey(String userId, String conversationId, String fileName);
 
     /** ✅ 新增：专门给“用户上传资源”用 */
     String buildUserResourceKey(String userId, String conversationId, String filename);

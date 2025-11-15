@@ -5,6 +5,8 @@ import { listSavedTools } from "../features/clientTools/storage";
 import { compileGraphToClientTool } from "../features/clientTools/compile";
 import type { ClientTool } from "../features/clientTools/types";
 import SafeMarkdown from "../components/SafeMarkdown";
+import { ChatFileUploader } from "../components/ChatFileUploader";
+import type { UploadFileResponse } from "../components/ChatFileUploader";
 type PendingLink = { url: string; target: "_self" | "_blank"; ts: number };
 import {
     Bot,
@@ -473,6 +475,44 @@ export default function JavelinMinimalChat() {
         setMsgs((prev) => [...prev, m]);
         touchActive();
     };
+
+    const handleFileUploaded = (resp: UploadFileResponse, file: File) => {
+        const sizeKB = Math.max(1, Math.round(resp.size / 1024));
+
+        const normUrl = normalizeFileUrl(resp.url);  // ⭐ 先规范化
+
+        addMessage({
+            id: newId(),
+            role: "assistant",
+            ts: Date.now(),
+            content:
+                `已上传文件 **${file.name}**（约 ${sizeKB} KB）。\n\n` +
+                `- 存储桶：\`${resp.bucket}\`\n` +
+                `- 对象 Key：\`${resp.objectKey}\`\n` +
+                (resp.contentType ? `- 类型：\`${resp.contentType}\`\n` : "") +
+                `- 下载链接：${normUrl}\n\n` +              // 👈 用规范化后的
+                `你可以在后续提问中引用此链接，或让工具去下载并分析这个文件。`,
+        });
+    };
+
+    function normalizeFileUrl(url: string): string {
+        if (typeof window === "undefined") return url;
+        try {
+            const u = new URL(url, window.location.origin);
+            const origin = window.location.origin;
+            let path = u.pathname || "/";
+
+            // 统一加 /minio 前缀（避免重复）
+            if (!path.startsWith("/minio/")) {
+                if (!path.startsWith("/")) path = "/" + path;
+                path = "/minio" + path;  // /minio/<bucket>/...
+            }
+
+            return origin + path + u.search + u.hash;
+        } catch {
+            return url;
+        }
+    }
 
     // —— 覆盖式写入草稿（根因修复，避免重复叠加）
     const replaceDraftContent = (text: string) => {
@@ -1310,6 +1350,24 @@ export default function JavelinMinimalChat() {
                                         {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
                                     </button>
                                 </div>
+
+                                {/* ⬇⬇⬇ 新增：文件上传组件 */}
+                                <ChatFileUploader
+                                    className="mt-2"
+                                    baseUrl={BASE_URL}
+                                    userId={userId}
+                                    conversationId={activeId}
+                                    onUploaded={handleFileUploaded}
+                                    onError={(err) => {
+                                        // 同时在对话里打一条错误信息
+                                        addMessage({
+                                            id: newId(),
+                                            role: "assistant",
+                                            ts: Date.now(),
+                                            content: `上传文件失败：\`${err.message}\``,
+                                        });
+                                    }}
+                                />
 
                                 {/* NEW: userId 输入（会话框下方，使用 label+htmlFor，去掉 aria-label） */}
                                 <div className="mt-2 flex items-center gap-2">

@@ -27,6 +27,40 @@ function normalize(md: string | undefined | null) {
     return md.replace(/\r\n?/g, "\n");
 }
 
+/**
+ * 将“内部地址”（127.0.0.1 / localhost / host.docker.internal / 9000/9001端口）
+ * 的前缀改成当前页面的 origin，保留路径 + 查询参数 + hash。
+ */
+function rewriteInternalUrl(url: string): string {
+    if (typeof window === "undefined") return url;
+    try {
+        const u = new URL(url, window.location.origin);
+
+        const internalHosts = ["127.0.0.1", "localhost", "host.docker.internal"];
+        const internalPorts = ["9000", "9001"];
+
+        const isInternalHost = internalHosts.includes(u.hostname);
+        const isInternalPort = internalPorts.includes(u.port);
+
+        // 只改内部地址，外网链接保持原样
+        if (!isInternalHost && !isInternalPort) return url;
+
+        const origin = window.location.origin;
+        let path = u.pathname || "/";
+
+        // 已经是 /minio/... 就不重复加
+        if (!path.startsWith("/minio/")) {
+            if (!path.startsWith("/")) path = "/" + path;
+            path = "/minio" + path; // /minio/<bucket>/...
+        }
+
+        return origin + path + u.search + u.hash;
+    } catch {
+        return url;
+    }
+}
+
+
 /** 基于默认 schema 的最小扩展：允许代码高亮 class（language-xxx / hljs） */
 const sanitizeSchema = {
     ...defaultSchema,
@@ -56,6 +90,17 @@ type CodeProps = React.DetailedHTMLProps<
     children?: React.ReactNode;
 };
 
+type LinkProps = React.DetailedHTMLProps<
+    React.AnchorHTMLAttributes<HTMLAnchorElement>,
+    HTMLAnchorElement
+>;
+
+type ImgProps = React.DetailedHTMLProps<
+    React.ImgHTMLAttributes<HTMLImageElement>,
+    HTMLImageElement
+>;
+
+
 export default function SafeMarkdown({
                                          source,
                                          allowHtml = false,
@@ -76,6 +121,37 @@ export default function SafeMarkdown({
     }
 
     const components: Components = {
+        // 新增：统一处理链接 href
+        a({ href, children, ...props }: LinkProps) {
+            const raw = typeof href === "string" ? href : "";
+            const safeHref = raw ? rewriteInternalUrl(raw) : raw;
+
+            let label: React.ReactNode = children;
+
+            if (raw && safeHref && React.Children.count(children) === 1) {
+                const only = React.Children.toArray(children)[0];
+                if (typeof only === "string" && only.trim() === raw.trim()) {
+                    // 如果显示文字本来就是原始 url，就一起替换成重写后的
+                    label = safeHref;
+                }
+            }
+
+            return (
+                <a href={safeHref} {...props}>
+                    {label}
+                </a>
+            );
+        },
+
+        // 新增：统一处理图片 src
+        img({ src, ...props }: ImgProps) {
+            const raw = typeof src === "string" ? src : "";
+            const safeSrc = raw ? rewriteInternalUrl(raw) : raw;
+
+            return <img src={safeSrc} {...props} />;
+        },
+
+        // 原来的 code 渲染保持不变
         code({ inline, className, children, ...props }: CodeProps) {
             const hasSyntax =
                 /\blanguage-/.test(className || "") || /\bhljs\b/.test(className || "");
@@ -91,23 +167,23 @@ export default function SafeMarkdown({
                 );
             }
 
-            // 代码块：有语法高亮 class 则用简洁边框；否则给个可读性良好的底色
             if (hasSyntax) {
                 return (
                     <pre className="rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm overflow-auto p-3">
-            <code className={className} {...props}>
-              {children}
-            </code>
-          </pre>
+                    <code className={className} {...props}>
+                        {children}
+                    </code>
+                </pre>
                 );
             }
             return (
                 <pre className="rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-slate-100 p-3 shadow-sm overflow-auto whitespace-pre-wrap break-words">
-          <code className="font-mono">{children}</code>
-        </pre>
+                <code className="font-mono">{children}</code>
+            </pre>
             );
         },
     };
+
 
     const wrapperClass = unstyled
         ? undefined

@@ -7,6 +7,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -40,11 +41,16 @@ public class DebugTool implements AiTool {
     @Override
     public ToolResult execute(Map<String, Object> args) throws Exception {
         log.info("debug tool from tool");
-        Map<String, Object> payload = Map.of(
-                "type", "text",
-                "value", "debug from tool"
-        );
-        return ToolResult.success(null, name(), false, Map.of("payload", payload));
+        String summary = "debug from tool";
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("type", "text");
+        payload.put("value", summary);
+        payload.put("message", summary);
+
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("payload", payload);
+        data.put("text", summary);
+        return ToolResult.success(null, name(), false, data);
     }
 }
 

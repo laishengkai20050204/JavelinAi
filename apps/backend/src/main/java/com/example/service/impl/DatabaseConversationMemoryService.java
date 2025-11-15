@@ -264,6 +264,15 @@ public class DatabaseConversationMemoryService implements ConversationMemoryServ
         if (!message.containsKey("payload") && StringUtils.hasText(entity.getPayload())) {
             message.put("payload", entity.getPayload());
         }
+        if (entity.getId() != null) {
+            message.putIfAbsent("id", entity.getId());
+        }
+        if (StringUtils.hasText(entity.getUserId())) {
+            message.putIfAbsent("userId", entity.getUserId());
+        }
+        if (StringUtils.hasText(entity.getConversationId())) {
+            message.putIfAbsent("conversationId", entity.getConversationId());
+        }
 
         return message;
     }
@@ -428,6 +437,24 @@ public class DatabaseConversationMemoryService implements ConversationMemoryServ
             log.warn("findMaxSeq failed userId={} conversationId={} stepId={}",
                     userId, conversationId, stepId, e);
             return 0;
+        }
+    }
+
+    @Override
+    public Map<String, Object> findMessageById(long id) {
+        if (id <= 0) {
+            return Map.of();
+        }
+        try {
+            ConversationMessageEntity entity = mapper.selectMessageById(id);
+            if (entity == null) {
+                return Map.of();
+            }
+            Map<String, Object> message = toMessageMap(entity);
+            return message.isEmpty() ? Map.of() : message;
+        } catch (Exception e) {
+            log.warn("findMessageById failed id={}", id, e);
+            return Map.of();
         }
     }
 

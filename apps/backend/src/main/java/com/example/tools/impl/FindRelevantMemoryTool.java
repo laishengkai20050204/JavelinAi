@@ -10,6 +10,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -68,7 +69,21 @@ public class FindRelevantMemoryTool implements AiTool {
 
         List<Map<String, Object>> relevant = memoryService.findRelevant(userId, conversationId, query, maxMessages);
         log.debug("Tool '{}' returned {} message(s)", name(), relevant.size());
-        return ToolResult.success(null, name(), false, Map.of("payload", relevant));
+
+        String normalizedQuery = query == null ? "" : query.trim();
+        String summary = relevant.isEmpty()
+                ? String.format("No relevant messages found for conversation %s.", conversationId)
+                : String.format("Retrieved %d message(s) for conversation %s%s.",
+                relevant.size(),
+                conversationId,
+                normalizedQuery.isEmpty() ? "" : " matching \"" + normalizedQuery + "\"");
+
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("payload", relevant);
+        data.put("text", summary);
+        data.put("count", relevant.size());
+
+        return ToolResult.success(null, name(), false, data);
     }
 
     private int normalizeWindow(int configured) {

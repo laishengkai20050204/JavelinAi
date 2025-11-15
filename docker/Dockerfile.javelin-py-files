@@ -4,13 +4,18 @@ FROM python:3.11-slim-bookworm
 ARG APT_MIRROR=https://mirrors.aliyun.com
 ARG PIP_MIRROR=https://mirrors.aliyun.com/pypi/simple
 
+# 这里顺便加上：
+# - PLAYWRIGHT_BROWSERS_PATH：让 Playwright 永远在 /ms-playwright 找浏览器
+# - SE_CACHE_PATH：让 Selenium Manager 的缓存放到 /tmp/selenium（tmpfs，可写）
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_INDEX_URL=${PIP_MIRROR} \
     PIP_EXTRA_INDEX_URL= \
     PIP_DEFAULT_TIMEOUT=60 \
     PIP_PREFER_BINARY=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
+    SE_CACHE_PATH=/tmp/selenium
 
 # ---- APT：国内源 + 回落官方源 + 运行时依赖 ----
 RUN set -eux; \
@@ -35,7 +40,17 @@ RUN set -eux; \
       libgomp1 libglib2.0-0 libgl1 libsm6 libxext6 libxrender1 libfreetype6 libpng16-16 \
     && rm -rf /var/lib/apt/lists/*
 
-# ---- 升级打包工具 + 科学栈一把装全 ----
+# 先把浏览器/缓存目录建好，设置好权限（只读镜像层 + 运行时读即可）
+RUN set -eux; \
+    mkdir -p /ms-playwright /tmp/selenium && \
+    chmod 755 /ms-playwright /tmp/selenium
+
+# ---- Python 科学栈 + 文档/图像 + 爬虫 + 浏览器渲染 ----
+# 这里利用上面的 ENV：
+# - PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+#   所以 python -m playwright install 会把浏览器装到 /ms-playwright
+# - SE_CACHE_PATH=/tmp/selenium
+#   将来 selenium.manager 要下东西会写到 /tmp/selenium（tmpfs，可写，不再是 /nonexistent/.cache）
 RUN pip install --no-cache-dir --prefer-binary \
     numpy pandas scipy pyarrow fastparquet \
     openpyxl xlrd==1.2.0 xlsxwriter pyxlsb \
@@ -50,4 +65,8 @@ RUN pip install --no-cache-dir --prefer-binary \
     scikit-image opencv-python-headless pywavelets imageio \
     polars dask distributed networkx \
     xgboost lightgbm \
-    pypdf2 pdfminer.six reportlab pdfrw
+    playwright selenium \
+    pypdf2 pdfminer.six reportlab pdfrw \
+ && python -m playwright install --with-deps chromium
+    # ↑ 有了 PLAYWRIGHT_BROWSERS_PATH，这一步会把 Chromium 装到 /ms-playwright
+    #   运行时 nobody 用户只读访问 /ms-playwright 即可，不再依赖 ~/.cache

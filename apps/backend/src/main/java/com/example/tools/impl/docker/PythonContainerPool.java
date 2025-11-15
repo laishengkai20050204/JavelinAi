@@ -178,8 +178,11 @@ public class PythonContainerPool {
             run(create, Duration.ofSeconds(30));
 
             run(Arrays.asList("docker","start",name), Duration.ofSeconds(20));
-            run(Arrays.asList("docker","exec",name,"python","-X","utf8","-m","venv","/ws/.venv"), Duration.ofMinutes(2));
-
+            run(Arrays.asList("docker","exec", name,
+                            "python","-X","utf8","-m","venv",
+                            "--system-site-packages",
+                            "/ws/.venv"),
+                    Duration.ofMinutes(2));
             boolean disconnected = false;
             if (props.denyNetworkAfterSetup) {
                 disconnectBridge(name);
@@ -393,7 +396,7 @@ public class PythonContainerPool {
                 log.info("GC python container {} (idle)", uc.name());
                 run(Arrays.asList("docker","rm","-f", uc.name()), Duration.ofSeconds(15));
                 pool.remove(uc.userId());
-                locks.remove(uc.userId);
+                locks.remove(uc.userId());
             }
         } catch (Exception e) {
             log.warn("gc idle error", e);

@@ -57,16 +57,22 @@ public class GetServerTimeTool implements AiTool {
             catch (Exception ignore) { /* fallback to iso */ }
         }
 
+        String summary = "Server time (" + zone.getId() + "): " + value;
+
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("type", "text");
         payload.put("value", value);
         payload.put("iso", iso);
         payload.put("epochMillis", Instant.now().toEpochMilli());
         payload.put("zoneId", zone.getId());
+        payload.put("message", summary);
 
-        return ToolResult.success(null, name(), false, Map.of("payload", payload));
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("payload", payload);
+        data.put("text", summary);
+
+        return ToolResult.success(null, name(), false, data);
     }
 
     private static String asString(Object v) { return v == null ? null : String.valueOf(v); }
 }
-

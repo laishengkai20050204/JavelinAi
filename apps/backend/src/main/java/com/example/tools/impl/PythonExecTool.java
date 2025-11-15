@@ -68,7 +68,7 @@ public class PythonExecTool implements AiTool {
 
     @Override
     public String description() {
-        return "在 Docker 中执行 Python；自动检测本次新增文件并上传到 MinIO，返回文件下载信息。";
+        return "在 Docker 中执行 Python, 也可以执行pip；自动检测本次新增文件并上传到 MinIO，返回文件下载信息。";
     }
 
     @Override
@@ -229,7 +229,7 @@ public class PythonExecTool implements AiTool {
                     if (!Files.exists(p) || !Files.isRegularFile(p)) continue;
                     long size = Files.size(p);
 
-                    String objectKey = storageService.buildObjectKey(userId, convId, rel.replace('\\','/'));
+                    String objectKey = storageService.buildPythonOutputKey(userId, convId, rel.replace('\\','/'));
 
                     try {
                         // 上传
@@ -257,6 +257,9 @@ public class PythonExecTool implements AiTool {
             data.put("exit_code", exit);
             if (!inlineFiles.isEmpty()) data.put("files", inlineFiles);
             if (!generatedFiles.isEmpty()) data.put("generated_files", generatedFiles);
+            String summary = summarizeExecution(stdout, stderr, exit);
+            data.put("summary", summary);
+            data.put("text", summary);
 
             return (exit == 0)
                     ? ToolResult.success(null, name(), false, data)
@@ -293,6 +296,31 @@ public class PythonExecTool implements AiTool {
                 out.put(rel, Files.readString(p));
             }
         } catch (Exception ignore) {}
+    }
+
+    private String summarizeExecution(String stdout, String stderr, int exit) {
+        StringBuilder sb = new StringBuilder("python exit ").append(exit);
+        String trimmedOut = trimForSummary(stdout);
+        String trimmedErr = trimForSummary(stderr);
+        if (!trimmedOut.isEmpty()) {
+            sb.append(" | stdout: ").append(trimmedOut);
+        }
+        if (exit != 0 && !trimmedErr.isEmpty()) {
+            sb.append(" | stderr: ").append(trimmedErr);
+        }
+        return sb.toString();
+    }
+
+    private String trimForSummary(String text) {
+        if (text == null) {
+            return "";
+        }
+        String trimmed = text.strip();
+        int limit = 400;
+        if (trimmed.length() > limit) {
+            trimmed = trimmed.substring(0, limit) + "...";
+        }
+        return trimmed;
     }
 
     private Map<String, FileStat> scanFilesSnapshot(Path root) {

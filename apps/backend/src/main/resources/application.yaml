@@ -41,7 +41,7 @@ ai:
     python:
       enabled: true
       use-docker: true
-      docker-image: "javelin-py:files"
+      docker-image: "javelin-py:v1"
       # —— 每用户一容器
       per-user-container: true
       # —— 工作区根目录（宿主机路径）

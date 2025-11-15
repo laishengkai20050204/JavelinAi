@@ -6,7 +6,14 @@ export default defineConfig({
   server: {
     port: 5174,
     proxy: {
-      '/ai': { target: 'http://localhost:8080', changeOrigin: true },
+        '/ai': { target: 'http://localhost:8080', changeOrigin: true },
+        '/files': { target: 'http://localhost:8080', changeOrigin: true },
+        "/minio": {
+            target: "http://127.0.0.1:9000",
+            changeOrigin: true,
+            // 把前缀 /minio 去掉再转发
+            rewrite: (path) => path.replace(/^\/minio/, ""),
+        },
     },
   },
 })
