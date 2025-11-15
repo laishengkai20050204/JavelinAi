@@ -55,24 +55,30 @@ public class ContextAssemblerImpl implements ContextAssembler {
         if (!stepRows.isEmpty()) rows.addAll(stepRows);
 
 
-        // 3) 单趟构造最终 messages（严格按 DB 顺序）
+// 3) 单趟构造最终 messages（严格按 DB 顺序）
         final String SYSTEM_PROMPT = """
-                You are a helpful assistant who writes concise, accurate answers in a developer-oriented tool-calling system.
-                
-                You have access to function-calling tools. In particular, you have a powerful tool called `python_exec` that can run Python code in its own isolated environment with a writable workspace and installed packages.
-                
-                With `python_exec` you can, for example:
-                - run and debug Python scripts;
-                - perform complex calculations, simulations, and data analysis;
-                - parse and transform text or files;
-                - read and write files in the workspace, and generate artifacts such as CSV/JSON, images, or documents.
-                
-                General tool-use rules:
-                - Whenever a task involves non-trivial calculation, coding, data processing, parsing, simulation, or file generation, you SHOULD prefer calling `python_exec` instead of only reasoning in natural language.
-                - If tools are available and helpful, you MUST propose function-calling tool calls rather than claiming you "cannot run code" or "do not have an environment", unless it is clearly impossible even with the tools.
-                - If a question can be reliably answered from your own knowledge without tools, you may answer directly, but you should still consider whether a tool could make the answer more precise or verifiable.
-                - After using tools, summarize the essential results clearly and concisely for the user.
-                """;
+        You are a helpful assistant who writes concise, accurate answers in a developer-oriented tool-calling system.
+        
+        You have access to function-calling tools. In particular, you have a powerful tool called `python_exec` that can run Python code in its own isolated environment with a writable workspace and installed packages.
+        
+        With `python_exec` you can, for example:
+        - run and debug Python scripts;
+        - perform complex calculations, simulations, and data analysis;
+        - parse and transform text or files;
+        - read and write files in the workspace, and generate artifacts such as CSV/JSON, images, or documents.
+        
+        General tool-use rules:
+        - Whenever a task involves non-trivial calculation, coding, data processing, parsing, simulation, or file generation, you SHOULD prefer calling `python_exec` instead of only reasoning in natural language.
+        - If tools are available and helpful, you MUST propose function-calling tool calls rather than claiming you "cannot run code" or "do not have an environment", unless it is clearly impossible even with the tools.
+        - If a question can be reliably answered from your own knowledge without tools, you may answer directly, but you should still consider whether a tool could make the answer more precise or verifiable.
+        - After using tools, summarize the essential results clearly and concisely for the user.
+        
+        Structured tool-calling protocol:
+        - When you decide to call a tool, you MUST use the structured `tool_calls` field in your response.
+        - Do NOT describe tool invocations in natural language (for example, do NOT write things like "[工具 xxx 的执行_params] {...}" or similar).
+        - Do NOT output JSON that describes a tool invocation inside the `content` field; JSON for tool calls must only appear inside `tool_calls[x].function.arguments`.
+        - For assistant messages that contain `tool_calls`, the `content` field should usually be empty.
+        """;
 
         List<Map<String, Object>> modelMessages = new ArrayList<>();
         modelMessages.add(Map.of("role", "system", "content", SYSTEM_PROMPT));
@@ -85,12 +91,12 @@ public class ContextAssemblerImpl implements ContextAssembler {
         Set<String> seenDecisionIds = new HashSet<>();
 
 
-// ① 先处理历史 FINAL：不再给 LLM 塞 tool_calls，只生成自然语言摘要
+        // ① 先处理历史 FINAL：不再给 LLM 塞 tool_calls，只生成自然语言摘要
         for (Map<String, Object> r : finalRows) {
             handleRow(r, modelMessages, plainTexts, structured, seenDecisionIds, true);
         }
 
-// ② 再处理当前 step：保持原有行为（还原成 assistant(tool_calls)+tool）
+        // ② 再处理当前 step：保持原有行为（还原成 assistant(tool_calls)+tool）
         for (Map<String, Object> r : stepRows) {
             handleRow(r, modelMessages, plainTexts, structured, seenDecisionIds, false);
         }
@@ -280,12 +286,15 @@ public class ContextAssemblerImpl implements ContextAssembler {
             structured.add(toolMsg);
 
             if (fromFinal) {
-                // ✅ 历史轮次：不再把 tool 作为 role=tool 发给 LLM，而是拼一条自然语言摘要
-                String summary = summarizeToolInteraction(toolName, argsStr, toolContent);
+                // ✅ 历史轮次：不再把 tool 作为 role=tool 发给 LLM，只给一个“指针”
+                Object rowIdObj = r.get("id");          // conversation_messages.id
+                String messageId = (rowIdObj == null) ? null : String.valueOf(rowIdObj);
+
+                String summary = summarizeToolInteraction(toolName, messageId, argsStr);
                 modelMessages.add(Map.of("role", "assistant", "content", summary));
                 plainTexts.add(new ChatMessage("assistant", summary));
             } else {
-                // 当前 step
+                // 当前 step 仍然按 OpenAI 协议发 role=tool 的消息
                 modelMessages.add(toolMsg);
             }
             return;
@@ -296,20 +305,40 @@ public class ContextAssemblerImpl implements ContextAssembler {
         plainTexts.add(new ChatMessage(roleStr, text));
     }
 
-    private String summarizeToolInteraction(String toolName, String argsJson, String content) {
+    /**
+     * 为“历史工具调用”生成一个简短的提示，告诉 LLM：
+     * - 调用了哪个工具；
+     * - 这条记录在 conversation_messages 表里的 id 是多少；
+     * - 如果需要详细输出，请调用专门的历史查询工具（例如：inspect_tool_output）。
+     *
+     * 这里刻意不再给出完整 JSON / 输出内容，只做“指针”，
+     * 避免模型学到类似 "[工具 xxx 的执行结果] {...}" 这种伪协议。
+     */
+    private String summarizeToolInteraction(String toolName, String messageId, String argsJson) {
         StringBuilder sb = new StringBuilder();
-        sb.append("[工具 ").append(toolName).append(" 的执行结果]\n");
 
-        if (argsJson != null && !argsJson.isBlank()) {
-            sb.append("参数(JSON):\n");
-            sb.append(argsJson).append("\n");
+        // 基本信息
+        sb.append("（回顾信息）本次对话的历史中，曾经调用过一个工具步骤：\n");
+        sb.append("- 工具名: ").append(toolName == null ? "unknown_tool" : toolName).append("\n");
+        if (messageId != null && !messageId.isBlank()) {
+            sb.append("- 消息ID (conversation_messages.id): ").append(messageId).append("\n");
+        } else {
+            sb.append("- 消息ID: （未记录或不可用）\n");
         }
 
-        sb.append("输出:\n");
-        sb.append(content == null ? "" : content);
+        // 可选地提醒一下“当时有 JSON 参数”，但不要展开
+        if (argsJson != null && !argsJson.isBlank()) {
+            sb.append("（当时调用时使用了一些 JSON 参数，这里省略具体内容，以节省上下文长度。）\n");
+        }
+
+        // 重点：指导后续如何用你新写的工具来获取详细输出
+        sb.append("如果你在后续回答中需要查看这一步工具调用的详细输出，");
+        sb.append("请调用工具 `inspect_tool_output`，并将参数 `message_id` 设置为上面提到的消息ID。");
 
         return sb.toString();
     }
+
+
 
 
 }

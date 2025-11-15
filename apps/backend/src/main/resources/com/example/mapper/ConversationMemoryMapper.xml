@@ -209,5 +209,13 @@
         ]]>
 </select>
 
+    <select id="selectMessageById" resultMap="ConversationMessageMap">
+        SELECT
+        <include refid="baseColumns"/>
+        FROM conversation_messages
+        WHERE id = #{id}
+        LIMIT 1
+    </select>
+
 
 </mapper>

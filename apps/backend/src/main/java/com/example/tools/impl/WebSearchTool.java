@@ -170,6 +170,7 @@ public class WebSearchTool implements AiTool {
             data.put("_provider", "serper");
             data.put("_endpoint", endpoint);
             data.put("_q", rawQ);
+            data.put("text", summarizeResults(rawQ, type, payload));
 
             return ToolResult.success(null, name(), false, data);
         } catch (WebClientResponseException wex) {
@@ -206,6 +207,25 @@ public class WebSearchTool implements AiTool {
             case "web", "news", "images" -> t;
             default -> def;
         };
+    }
+
+    private String summarizeResults(String rawQuery, String type, List<Map<String, Object>> results) {
+        String query = rawQuery == null ? "" : rawQuery.trim();
+        String kind = !StringUtils.hasText(type) ? "web" : type;
+        if (results == null || results.isEmpty()) {
+            return String.format("web_search (%s) found no results for \"%s\".", kind, query);
+        }
+        Map<String, Object> first = results.get(0);
+        String title = first == null ? null : str(first.get("title"));
+        String snippet = first == null ? null : str(first.get("snippet"));
+        String url = first == null ? null : str(first.get("url"));
+        String highlight = StringUtils.hasText(title) ? title
+                : (StringUtils.hasText(snippet) ? snippet : url);
+        return String.format("web_search (%s) returned %d result(s) for \"%s\". Top: %s",
+                kind,
+                results.size(),
+                query,
+                StringUtils.hasText(highlight) ? highlight : "no title/url");
     }
 
     private static String def(String v, String d) { return StringUtils.hasText(v) ? v : d; }

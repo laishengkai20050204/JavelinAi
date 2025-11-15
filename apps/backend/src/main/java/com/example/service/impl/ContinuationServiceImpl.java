@@ -202,16 +202,29 @@ public class ContinuationServiceImpl implements ContinuationService {
         if (data == null) return "";
         if (data instanceof String s) return s;
         if (data instanceof Map<?, ?> m) {
-            for (String k : List.of("value","text","content","message","delta")) {
+            for (String k : List.of("value","text","content","message","delta","summary")) {
                 Object v = m.get(k);
                 if (v instanceof String sv && !sv.isBlank()) return sv;
             }
             Object inner = m.get("payload");
+            if (inner instanceof String s && !s.isBlank()) {
+                return s;
+            }
             if (inner instanceof Map<?, ?> im) {
                 for (String k : List.of("value","text","content","message","delta")) {
                     Object v = im.get(k);
                     if (v instanceof String sv && !sv.isBlank()) return sv;
                 }
+            } else if (inner instanceof Iterable<?> it) {
+                StringBuilder sb = new StringBuilder();
+                for (Object x : it) {
+                    String part = extractReadableText(x);
+                    if (part != null && !part.isBlank()) {
+                        if (sb.length() > 0) sb.append("\n");
+                        sb.append(part);
+                    }
+                }
+                if (sb.length() > 0) return sb.toString();
             }
             return toJson(m);
         }

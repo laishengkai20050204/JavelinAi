@@ -1,10 +1,12 @@
 package com.example.file.service;
 
 import com.example.file.domain.AiFile;
+import org.springframework.stereotype.Service;
 
 import java.util.List;
 import java.util.Optional;
 
+@Service
 public interface AiFileService {
 
     /**

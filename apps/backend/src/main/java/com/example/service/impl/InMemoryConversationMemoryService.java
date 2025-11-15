@@ -407,4 +407,9 @@ public class InMemoryConversationMemoryService implements ConversationMemoryServ
         return max;
     }
 
+    @Override
+    public Map<String, Object> findMessageById(long id) {
+        return Map.of();
+    }
+
 }

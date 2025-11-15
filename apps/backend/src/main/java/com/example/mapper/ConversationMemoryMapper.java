@@ -64,4 +64,6 @@ public interface ConversationMemoryMapper {
 
 
     LocalDateTime selectCreatedAt(String userId, String conversationId, String stepId, int seq);
+
+    ConversationMessageEntity selectMessageById(@Param("id") long id);
 }
