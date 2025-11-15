@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<mapper namespace="com.example.mapper.AiFileMapper">
+
+    <resultMap id="AiFileResultMap" type="com.example.file.domain.AiFile">
+        <id     column="id"               property="id"/>
+        <result column="user_id"          property="userId"/>
+        <result column="conversation_id"  property="conversationId"/>
+        <result column="bucket"           property="bucket"/>
+        <result column="object_key"       property="objectKey"/>
+        <result column="filename"         property="filename"/>
+        <result column="size_bytes"       property="sizeBytes"/>
+        <result column="mime_type"        property="mimeType"/>
+        <result column="source"           property="source"/>
+        <result column="sha256"           property="sha256"/>
+        <result column="created_at"       property="createdAt"/>
+        <result column="deleted_at"       property="deletedAt"/>
+    </resultMap>
+
+    <insert id="insert" parameterType="com.example.file.domain.AiFile">
+        INSERT INTO ai_file
+        (
+            id,
+            user_id,
+            conversation_id,
+            bucket,
+            object_key,
+            filename,
+            size_bytes,
+            mime_type,
+            source,
+            sha256,
+            created_at,
+            deleted_at
+        )
+        VALUES
+            (
+                #{id},
+                #{userId},
+                #{conversationId},
+                #{bucket},
+                #{objectKey},
+                #{filename},
+                #{sizeBytes},
+                #{mimeType},
+                #{source},
+                #{sha256},
+                #{createdAt},
+                #{deletedAt}
+            )
+    </insert>
+
+    <select id="selectById" parameterType="string"
+            resultMap="AiFileResultMap">
+        SELECT
+            id,
+            user_id,
+            conversation_id,
+            bucket,
+            object_key,
+            filename,
+            size_bytes,
+            mime_type,
+            source,
+            sha256,
+            created_at,
+            deleted_at
+        FROM ai_file
+        WHERE id = #{id}
+          AND deleted_at IS NULL
+    </select>
+
+    <select id="listByConversation"
+            resultMap="AiFileResultMap">
+        SELECT
+            id,
+            user_id,
+            conversation_id,
+            bucket,
+            object_key,
+            filename,
+            size_bytes,
+            mime_type,
+            source,
+            sha256,
+            created_at,
+            deleted_at
+        FROM ai_file
+        WHERE user_id = #{userId}
+          AND conversation_id = #{conversationId}
+          AND deleted_at IS NULL
+        ORDER BY created_at DESC
+    </select>
+
+</mapper>
