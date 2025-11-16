@@ -309,34 +309,111 @@ public class ContextAssemblerImpl implements ContextAssembler {
      * 为“历史工具调用”生成一个简短的提示，告诉 LLM：
      * - 调用了哪个工具；
      * - 这条记录在 conversation_messages 表里的 id 是多少；
-     * - 如果需要详细输出，请调用专门的历史查询工具（例如：inspect_tool_output）。
+     * - 大致用了哪些关键参数（摘要，而不是完整 JSON）；
+     * - 如果需要详细输出，请调用 inspect_tool_output。
      *
-     * 这里刻意不再给出完整 JSON / 输出内容，只做“指针”，
-     * 避免模型学到类似 "[工具 xxx 的执行结果] {...}" 这种伪协议。
+     * 注意：这里避免使用类似 "[工具 xxx 的执行结果]" 这种“协议样”文案，
+     * 只做自然语言说明 + 少量参数摘要，防止模型学坏格式。
      */
     private String summarizeToolInteraction(String toolName, String messageId, String argsJson) {
         StringBuilder sb = new StringBuilder();
 
-        // 基本信息
+        String safeToolName = (toolName == null ? "unknown_tool" : toolName);
+
         sb.append("（回顾信息）本次对话的历史中，曾经调用过一个工具步骤：\n");
-        sb.append("- 工具名: ").append(toolName == null ? "unknown_tool" : toolName).append("\n");
+        sb.append("- 工具名: ").append(safeToolName).append("\n");
         if (messageId != null && !messageId.isBlank()) {
             sb.append("- 消息ID (conversation_messages.id): ").append(messageId).append("\n");
         } else {
             sb.append("- 消息ID: （未记录或不可用）\n");
         }
 
-        // 可选地提醒一下“当时有 JSON 参数”，但不要展开
+        // ===== 参数摘要（避免整坨 JSON） =====
         if (argsJson != null && !argsJson.isBlank()) {
-            sb.append("（当时调用时使用了一些 JSON 参数，这里省略具体内容，以节省上下文长度。）\n");
+            try {
+                var node = objectMapper.readTree(argsJson);
+
+                // 针对 python_exec 做一点友好处理：把 code / userId / conversationId 摘要一下
+                if ("python_exec".equals(safeToolName)) {
+                    String code = node.path("code").asText(null);
+                    String userIdArg = node.path("userId").asText(null);
+                    String convIdArg = node.path("conversationId").asText(null);
+
+                    sb.append("这一步调用大致是执行了一段 Python 代码");
+                    if (userIdArg != null || convIdArg != null) {
+                        sb.append("（");
+                        if (userIdArg != null) {
+                            sb.append("userId=").append(userIdArg);
+                            if (convIdArg != null) sb.append(", ");
+                        }
+                        if (convIdArg != null) {
+                            sb.append("conversationId=").append(convIdArg);
+                        }
+                        sb.append("）");
+                    }
+                    sb.append("。\n");
+
+                    if (code != null && !code.isBlank()) {
+                        String preview = code.trim();
+                        int maxLen = 120;
+                        if (preview.length() > maxLen) {
+                            preview = preview.substring(0, maxLen) + "...(代码已截断)";
+                        }
+                        sb.append("当时传入的 code 片段示例：\n");
+                        sb.append(preview).append("\n");
+                    }
+                } else {
+                    // 通用工具：列几个顶层字段名 + 简短 value 摘要
+                    sb.append("当时调用时使用了一些参数，主要字段包括：");
+
+                    List<String> fields = new ArrayList<>();
+                    node.fieldNames().forEachRemaining(fields::add);
+
+                    if (fields.isEmpty()) {
+                        sb.append("（无显式字段）\n");
+                    } else {
+                        // 只展示前几个 key，避免太长
+                        int maxFields = Math.min(5, fields.size());
+                        sb.append("\n");
+                        for (int i = 0; i < maxFields; i++) {
+                            String f = fields.get(i);
+                            var v = node.get(f);
+                            String vStr;
+                            if (v.isTextual()) {
+                                vStr = v.asText();
+                                if (vStr.length() > 60) {
+                                    vStr = vStr.substring(0, 60) + "...";
+                                }
+                            } else if (v.isNumber() || v.isBoolean()) {
+                                vStr = v.toString();
+                            } else {
+                                vStr = v.toString();
+                                if (vStr.length() > 60) {
+                                    vStr = vStr.substring(0, 60) + "...";
+                                }
+                            }
+                            sb.append("- ").append(f).append(" = ").append(vStr).append("\n");
+                        }
+                        if (fields.size() > maxFields) {
+                            sb.append("…（其余字段已省略，以节省上下文长度）\n");
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                // JSON 解析失败，就退回到一句粗略描述
+                sb.append("（当时调用时使用了一些 JSON 参数，这里因解析失败未展开。）\n");
+            }
+        } else {
+            sb.append("（这一步调用没有显式的参数 JSON，或记录为空。）\n");
         }
 
-        // 重点：指导后续如何用你新写的工具来获取详细输出
-        sb.append("如果你在后续回答中需要查看这一步工具调用的详细输出，");
+        // 重点：告诉它如何用 inspect_tool_output 拿完整信息
+        sb.append("如果你在后续回答中需要查看这一步工具调用的完整输出，");
         sb.append("请调用工具 `inspect_tool_output`，并将参数 `message_id` 设置为上面提到的消息ID。");
 
         return sb.toString();
     }
+
 
 
 
