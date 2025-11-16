@@ -315,12 +315,7 @@ public class PythonExecTool implements AiTool {
         if (text == null) {
             return "";
         }
-        String trimmed = text.strip();
-        int limit = 400;
-        if (trimmed.length() > limit) {
-            trimmed = trimmed.substring(0, limit) + "...";
-        }
-        return trimmed;
+        return text.strip();
     }
 
     private Map<String, FileStat> scanFilesSnapshot(Path root) {
