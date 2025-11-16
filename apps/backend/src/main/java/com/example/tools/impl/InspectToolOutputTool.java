@@ -146,23 +146,17 @@ public class InspectToolOutputTool implements AiTool {
         sb.append("role: ").append(role).append("\n");
         sb.append("tool_name (from payload.name): ").append(toolName).append("\n\n");
 
-        // content 截断一下，避免太长撑爆上下文
-        String shortContent = content == null ? "" : content.trim();
-        if (shortContent.length() > 2000) {
-            shortContent = shortContent.substring(0, 2000) + "\n...(truncated)...";
-        }
-
+        // 不再截断 content，完整给 LLM 看
+        String fullContent = content == null ? "" : content.trim();
         sb.append("=== content (original message content) ===\n");
-        sb.append(shortContent).append("\n");
+        sb.append(fullContent).append("\n");
 
-        // payload 作为 debug 信息可选附带一点
+        // payload JSON 也不截断（或仅做非常大的限制）
         if (payloadNode != null && !payloadNode.isNull()) {
             try {
                 String pretty = objectMapper.writerWithDefaultPrettyPrinter()
                         .writeValueAsString(payloadNode);
-                if (pretty.length() > 2000) {
-                    pretty = pretty.substring(0, 2000) + "\n...(payload truncated)...";
-                }
+
                 sb.append("\n=== payload JSON (for debugging / extra context) ===\n");
                 sb.append(pretty);
             } catch (Exception ignore) {
@@ -171,4 +165,5 @@ public class InspectToolOutputTool implements AiTool {
 
         return sb.toString();
     }
+
 }
