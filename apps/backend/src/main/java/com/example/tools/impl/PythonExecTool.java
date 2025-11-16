@@ -257,9 +257,13 @@ public class PythonExecTool implements AiTool {
             data.put("exit_code", exit);
             if (!inlineFiles.isEmpty()) data.put("files", inlineFiles);
             if (!generatedFiles.isEmpty()) data.put("generated_files", generatedFiles);
+
             String summary = summarizeExecution(stdout, stderr, exit);
+            // text: 在 summary 的基础上，把生成文件 + URL 也串进去
+            String text = buildDetailText(summary, generatedFiles);
+
             data.put("summary", summary);
-            data.put("text", summary);
+            data.put("text", text);
 
             return (exit == 0)
                     ? ToolResult.success(null, name(), false, data)
@@ -286,6 +290,60 @@ public class PythonExecTool implements AiTool {
 
 
     // ===== helpers =====
+
+    /**
+     * 在 summary 的基础上拼上生成文件信息（包含 URL），供 LLM / 前端直接阅读。
+     */
+    private String buildDetailText(String summary, Map<String, Object> generatedFiles) {
+        String base = (summary == null ? "" : summary.strip());
+        if (generatedFiles == null || generatedFiles.isEmpty()) {
+            return base;
+        }
+
+        StringBuilder sb = new StringBuilder();
+        if (!base.isEmpty()) {
+            sb.append(base);
+        }
+
+        sb.append("\n\nGenerated files:\n");
+
+        int count = 0;
+        int maxShow = 10; // 最多展示 10 个，避免极端情况把字段撑爆
+
+        for (Map.Entry<String, Object> e : generatedFiles.entrySet()) {
+            if (count >= maxShow) {
+                sb.append("... (more files omitted)\n");
+                break;
+            }
+            String relPath = e.getKey();
+            Object metaObj = e.getValue();
+            String url = null;
+            Long size = null;
+
+            if (metaObj instanceof Map<?,?> m) {
+                Object u = m.get("url");
+                if (u != null) url = String.valueOf(u);
+                Object sz = m.get("size");
+                if (sz instanceof Number n) size = n.longValue();
+                else if (sz != null) {
+                    try { size = Long.parseLong(sz.toString()); } catch (Exception ignore) {}
+                }
+            }
+
+            sb.append("- ").append(relPath);
+            if (size != null) {
+                sb.append(" (").append(size).append(" bytes)");
+            }
+            if (url != null && !url.isBlank()) {
+                sb.append(": ").append(url);
+            }
+            sb.append("\n");
+            count++;
+        }
+
+        return sb.toString();
+    }
+
 
     private static void tryReadSmallText(Path base, String rel, Map<String,String> out) {
         try {

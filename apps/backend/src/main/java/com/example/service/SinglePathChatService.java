@@ -401,18 +401,25 @@ public class SinglePathChatService {
                                 .flatMap(res -> toolPipeline.record(st.stepId(), callCtx.name(), fp, res).thenReturn(res))
                 )
                 .map(res -> {
-                    // ★ 关键：把 res.data() 做“解包”再放进去，去掉 payload.payload 的双层
-                    Object inner = ToolPayloads.unwrap(res.data(), objectMapper);
+                    Object raw = res.data();
 
-                    Map<String,Object> data = new LinkedHashMap<>();
-                    data.put("payload", inner);       // 只保留一层 payload
+                    // 1) 先把原始 data 转成 Map，保留所有字段（stdout、generated_files 等）
+                    Map<String, Object> data = ToolPayloads.toMap(raw, objectMapper);
+
+                    // 2) 提供给框架的 payload 视图（通常就是 text / summary 解包后）
+                    Object inner = ToolPayloads.unwrap(raw, objectMapper);
+                    data.put("payload", inner);
+
+                    // 3) 附加去重 & 参数元信息
                     data.put("_executedKey", executedKey);
-                    data.put("args", argsStable);     // 权威参数（字符串）
+                    data.put("args", argsStable);
 
                     return ToolResult.success(
                             callCtx.id(), callCtx.name(), res.reused(), data
                     );
                 });
+
+
     }
 
 
