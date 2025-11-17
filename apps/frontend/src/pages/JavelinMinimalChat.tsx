@@ -1025,344 +1025,377 @@ export default function JavelinMinimalChat() {
         [events],
     );
 
+    // ====== 这里开始是 ChatGPT 风格布局的 return ======
     return (
-        <div className="min-h-screen w-full bg-gradient-to-b from-slate-50 to-white dark:from-slate-950 dark:to-slate-900 text-slate-900 dark:text-slate-100">
-            <div className="mx-auto max-w-6xl px-3 sm:px-4 py-3">
-                <div className="grid grid-cols-1 md:grid-cols-[auto_minmax(0,1fr)] gap-3 md:gap-4">
-                    {/* Sidebar */}
-                    <motion.aside
-                        layout
-                        initial={false}
-                        animate={{ width: sidebarOpen ? 280 : 56 }}
-                        transition={{ type: "spring", stiffness: 260, damping: 24 }}
-                        className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white/70 dark:bg-slate-900/40 overflow-hidden"
+        <div className="h-full w-full bg-white text-slate-900">
+            <div className="flex h-full">
+                {/* 左侧：会话栏 */}
+                <aside
+                    className={`flex h-full flex-col border-r border-slate-200 bg-slate-50 transition-[width] duration-200 ${
+                        sidebarOpen ? "w-64" : "w-0 sm:w-64"
+                    }`}
+                >
+                    <div
+                        className={`flex h-full flex-col overflow-hidden ${
+                            sidebarOpen
+                                ? "opacity-100"
+                                : "opacity-0 pointer-events-none sm:opacity-100 sm:pointer-events-auto"
+                        }`}
                     >
-                        <div className="flex">
-                            {/* Mini rail */}
-                            <div className="w-14 shrink-0 py-2 flex flex-col items-center gap-2">
-                                <button
-                                    onClick={() => setSidebarOpen((v) => !v)}
-                                    className="h-9 w-9 inline-flex items-center justify-center rounded-xl border border-slate-300/60 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800"
-                                    title={sidebarOpen ? "收起侧边栏" : "展开侧边栏"}
-                                    aria-label="切换侧边栏"
-                                >
-                                    <Menu className="h-4 w-4" />
-                                </button>
-                                <button
-                                    onClick={createConversation}
-                                    className="h-9 w-9 inline-flex items-center justify-center rounded-xl border border-slate-300/60 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800"
-                                    title="新建对话"
-                                    aria-label="新建对话"
-                                >
-                                    <Plus className="h-4 w-4" />
-                                </button>
-                            </div>
-
-                            {/* Expanded panel */}
-                            <motion.div
-                                className="flex-1 min-w-0 p-3"
-                                initial={false}
-                                animate={{ opacity: sidebarOpen ? 1 : 0, x: sidebarOpen ? 0 : -8 }}
-                                transition={{ duration: 0.18 }}
-                                style={{ pointerEvents: sidebarOpen ? "auto" : "none" }}
-                            >
-                                <div className="flex items-center gap-2 mb-2">
-                                    <div className="p-2 rounded-xl bg-slate-900 text-white dark:bg-white dark:text-slate-900">
-                                        <Sparkles className="h-4 w-4" />
-                                    </div>
-                                    <div className="font-semibold">会话</div>
-                                    <div className="ml-auto flex items-center gap-2">
-                                        <button
-                                            onClick={createConversation}
-                                            className="inline-flex items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-xs border border-slate-300/70 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800"
-                                        >
-                                            <Plus className="h-3.5 w-3.5" />
-                                            新建
-                                        </button>
-                                        {/*aria-label="User ID"*/}
-                                    </div>
-                                </div>
-
-                                <div className="relative mb-2">
-                                    <Search className="absolute left-2 top-2.5 h-4 w-4 text-slate-400" />
-                                    <input
-                                        value={query}
-                                        onChange={(e) => setQuery(e.target.value)}
-                                        placeholder="搜索会话…"
-                                        className="w-full rounded-2xl border border-slate-200 dark:border-slate-800 bg-transparent pl-8 pr-3 py-2 text-sm outline-none"
-                                    />
-                                </div>
-                                {/* Tools panel */}
-                                <div className="mb-2 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white/60 dark:bg-slate-900/40">
-                                    <button
-                                        onClick={() => setToolPanelOpen(v => !v)}
-                                        className="w-full flex items-center justify-between px-3 py-2 text-xs font-medium"
-                                    >
-                                        <span>工具（已启用 {Object.values(exposed).filter(Boolean).length}/{clientTools.length}）</span>
-                                        <span className="opacity-60">{toolPanelOpen ? "收起" : "展开"}</span>
-                                    </button>
-                                    {toolPanelOpen && (
-                                        <div className="max-h-44 overflow-auto px-2 pb-2 space-y-1">
-                                            {clientTools.length === 0 && (
-                                                <div className="text-[11px] text-slate-500 dark:text-slate-400 px-2 py-3">
-                                                    暂无客户端工具（去 Tool Builder 新建）
-                                                </div>
-                                            )}
-                                            {clientTools.map(t => {
-                                                const name = t.manifest?.name || "(unnamed)";
-                                                const desc = t.manifest?.description || "";
-                                                const on = !!exposed[name];
-                                                return (
-                                                    <label key={name} className="flex items-center gap-2 rounded-xl px-2 py-1 hover:bg-black/5 dark:hover:bg-white/10">
-                                                        <input
-                                                            type="checkbox"
-                                                            checked={on}
-                                                            onChange={(e) => {
-                                                                const v = e.target.checked;
-                                                                setExposed(prev => {
-                                                                    const next = { ...prev, [name]: v };
-                                                                    try { localStorage.setItem(TOOLS_SELECTION_KEY, JSON.stringify(next)); } catch {}
-                                                                    return next;
-                                                                });
-                                                            }}
-                                                        />
-                                                        <div className="min-w-0">
-                                                            <div className="text-xs font-medium truncate">{name}</div>
-                                                            {desc && <div className="text-[11px] opacity-70 truncate">{desc}</div>}
-                                                        </div>
-                                                    </label>
-                                                );
-                                            })}
-                                        </div>
-                                    )}
-                                </div>
-
-                                <div className="space-y-1 max-h-[68vh] overflow-y-auto pr-1">
-                                    {filtered.length === 0 && (
-                                        <div className="text-xs text-slate-500 dark:text-slate-400 py-6 text-center">
-                                            没有匹配的会话
-                                        </div>
-                                    )}
-                                    {filtered.map((c) => (
-                                        <div
-                                            key={c.id}
-                                            role="button"
-                                            tabIndex={0}
-                                            onClick={() => {
-                                                setActiveId(c.id);
-                                                setEvents([]);
-                                                setInput("");
-                                            }}
-                                            onKeyDown={(e) => {
-                                                if (e.key === "Enter" || e.key === " ") {
-                                                    e.preventDefault();
-                                                    setActiveId(c.id);
-                                                    setEvents([]);
-                                                    setInput("");
-                                                }
-                                            }}
-                                            className={`w-full text-left rounded-2xl px-3 py-2 border transition cursor-pointer focus:outline-none focus:ring-2 focus:ring-slate-400/40 ${
-                                                c.id === activeId
-                                                    ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900 border-slate-900/20 dark:border-white/10"
-                                                    : "bg-white/70 dark:bg-slate-900/40 border-slate-200 dark:border-slate-800 hover:bg-slate-100/70 dark:hover:bg-slate-800/60"
-                                            }`}
-                                        >
-                                            <div className="flex items-center gap-2">
-                                                <div className="flex-1 min-w-0 truncate font-medium text-sm">
-                                                    {c.title || UNTITLED}
-                                                </div>
-                                                <div className="ml-2 shrink-0 flex items-center gap-1 opacity-80">
-                                                    <button
-                                                        type="button"
-                                                        onPointerDown={(e) => {
-                                                            e.preventDefault();
-                                                            e.stopPropagation();
-                                                        }}
-                                                        onMouseDown={(e) => {
-                                                            e.preventDefault();
-                                                            e.stopPropagation();
-                                                        }}
-                                                        onClick={(e) => {
-                                                            e.preventDefault();
-                                                            e.stopPropagation();
-                                                            requestRename(c.id);
-                                                        }}
-                                                        className="p-1 rounded hover:bg-black/5 dark:hover:bg-white/10"
-                                                        aria-label="重命名会话"
-                                                        title="重命名"
-                                                    >
-                                                        <Pencil className="h-3.5 w-3.5" />
-                                                    </button>
-                                                    <button
-                                                        type="button"
-                                                        onPointerDown={(e) => {
-                                                            e.preventDefault();
-                                                            e.stopPropagation();
-                                                        }}
-                                                        onMouseDown={(e) => {
-                                                            e.preventDefault();
-                                                            e.stopPropagation();
-                                                        }}
-                                                        onClick={(e) => {
-                                                            e.preventDefault();
-                                                            e.stopPropagation();
-                                                            requestDelete(c.id);
-                                                        }}
-                                                        className="p-1 rounded hover:bg-black/5 dark:hover:bg-white/10"
-                                                        aria-label="删除会话"
-                                                        title="删除"
-                                                    >
-                                                        <Trash2 className="h-3.5 w-3.5" />
-                                                    </button>
-                                                </div>
-                                            </div>
-                                            <div className="text-[11px] mt-0.5 opacity-70 truncate">
-                                                {convMessages[c.id]?.[convMessages[c.id].length - 1]?.content ?? "(空)"}
-                                            </div>
-                                        </div>
-                                    ))}
-                                </div>
-                            </motion.div>
-                        </div>
-                    </motion.aside>
-
-                    {/* Main column */}
-                    <motion.main
-                        layout
-                        className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white/70 dark:bg-slate-900/40"
-                    >
-                        {/* Header */}
-                        <div className="sticky top-0 z-10 px-3 sm:px-4 py-3 border-b border-slate-200/70 dark:border-slate-800 backdrop-blur">
+                        {/* 顶部：标题 + 新建按钮 */}
+                        <div className="flex items-center justify-between px-3 pt-3 pb-2">
                             <div className="flex items-center gap-2">
+                                <div className="flex h-7 w-7 items-center justify-center rounded-xl bg-slate-900 text-white">
+                                    <Sparkles className="h-3.5 w-3.5" />
+                                </div>
+                                <div>
+                                    <div className="text-xs font-semibold">会话</div>
+                                    <div className="text-[11px] text-slate-500">
+                                        共 {conversations.length || 0} 个
+                                    </div>
+                                </div>
+                            </div>
+                            <button
+                                onClick={createConversation}
+                                className="inline-flex items-center justify-center rounded-xl border border-slate-300 bg-white px-2 py-1 text-[11px] hover:bg-slate-100"
+                            >
+                                <Plus className="h-3 w-3" />
+                                <span className="ml-1">新建</span>
+                            </button>
+                        </div>
+
+                        {/* 搜索框 */}
+                        <div className="relative px-3 pb-2">
+                            <Search className="pointer-events-none absolute left-5 top-2.5 h-3.5 w-3.5 text-slate-400" />
+                            <input
+                                value={query}
+                                onChange={(e) => setQuery(e.target.value)}
+                                placeholder="搜索会话…"
+                                className="w-full rounded-2xl border border-slate-200 bg-white pl-8 pr-3 py-1.5 text-[13px] outline-none placeholder:text-slate-400 focus:border-slate-400"
+                            />
+                        </div>
+
+                        {/* 工具开关 */}
+                        <div className="px-3 pb-2">
+                            <div className="rounded-2xl border border-slate-200 bg-white">
                                 <button
-                                    onClick={() => setSidebarOpen((v) => !v)}
-                                    className="mr-1 inline-flex items-center justify-center h-9 w-auto px-2.5 rounded-2xl border border-slate-300/60 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800"
-                                    title="切换侧边栏"
+                                    onClick={() => setToolPanelOpen((v) => !v)}
+                                    className="flex w-full items-center justify-between px-3 py-2 text-[11px] font-medium"
                                 >
-                                    <Menu className="h-4 w-4" />
-                                    <span className="ml-1 hidden sm:inline text-xs">
-                    {sidebarOpen ? "收起" : "展开"}
-                  </span>
+                                    <span>
+                                        工具（已启用 {Object.values(exposed).filter(Boolean).length}/
+                                        {clientTools.length}）
+                                    </span>
+                                    <span className="text-[10px] text-slate-500">
+                                        {toolPanelOpen ? "收起" : "展开"}
+                                    </span>
                                 </button>
-                                <div className="p-2 rounded-xl bg-slate-900 text-white dark:bg-white dark:text-slate-900">
-                                    <Sparkles className="h-4 w-4" />
-                                </div>
-                                <div className="font-semibold leading-tight truncate">
-                                    {conversations.find((c) => c.id === activeId)?.title || UNTITLED}
-                                </div>
-                                <div className="ml-auto flex items-center gap-2">
-                                    {busy ? (
-                                        <button
-                                            onClick={handleStop}
-                                            className="inline-flex items-center gap-2 rounded-2xl px-3 py-1.5 text-sm border border-slate-300/60 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800"
-                                        >
-                                            <Loader2 className="h-4 w-4 animate-spin" /> 停止
-                                        </button>
-                                    ) : (
-                                        <button
-                                            onClick={createConversation}
-                                            className="inline-flex items-center gap-2 rounded-2xl px-3 py-1.5 text-sm border border-slate-300/60 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800"
-                                        >
-                                            <Plus className="h-4 w-4" /> 新建
-                                        </button>
-                                    )}
-                                    <button
-                                        onClick={() => setShowDebug((v) => !v)}
-                                        className="inline-flex items-center gap-2 rounded-2xl px-3 py-1.5 text-sm border border-slate-300/60 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800"
-                                    >
-                                        <Bug className="h-4 w-4" /> {showDebug ? "隐藏事件" : "查看事件"}
-                                    </button>
-                                </div>
+                                {toolPanelOpen && (
+                                    <div className="max-h-40 space-y-1 overflow-auto px-2 pb-2">
+                                        {clientTools.length === 0 && (
+                                            <div className="px-2 py-3 text-[11px] text-slate-500">
+                                                暂无客户端工具（去 Tool Builder 新建）
+                                            </div>
+                                        )}
+                                        {clientTools.map((t) => {
+                                            const name = t.manifest?.name || "(unnamed)";
+                                            const desc = t.manifest?.description || "";
+                                            const on = !!exposed[name];
+                                            return (
+                                                <label
+                                                    key={name}
+                                                    className="flex items-center gap-2 rounded-xl px-2 py-1 hover:bg-slate-50"
+                                                >
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={on}
+                                                        onChange={(e) => {
+                                                            const v = e.target.checked;
+                                                            setExposed((prev) => {
+                                                                const next = { ...prev, [name]: v };
+                                                                try {
+                                                                    localStorage.setItem(
+                                                                        TOOLS_SELECTION_KEY,
+                                                                        JSON.stringify(next),
+                                                                    );
+                                                                } catch {}
+                                                                return next;
+                                                            });
+                                                        }}
+                                                    />
+                                                    <div className="min-w-0">
+                                                        <div className="truncate text-xs font-medium">{name}</div>
+                                                        {desc && (
+                                                            <div className="truncate text-[11px] text-slate-500">
+                                                                {desc}
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                </label>
+                                            );
+                                        })}
+                                    </div>
+                                )}
                             </div>
                         </div>
 
-                        {/* Messages */}
-                        <div className="px-3 sm:px-4 py-3">
-                            <div
-                                ref={listRef}
-                                className="h-[60vh] md:h-[66vh] overflow-y-auto rounded-2xl border border-slate-200 dark:border-slate-800 bg-white/70 dark:bg-slate-900/40 p-3 sm:p-4"
-                            >
-                                {messages.length === 0 && <EmptyState />}
-                                <div className="space-y-3">
-                                    {messages.map((m) => (
-                                        <motion.div
-                                            key={m.id}
-                                            initial={{ opacity: 0, y: 8 }}
-                                            animate={{ opacity: 1, y: 0 }}
-                                            transition={{ duration: 0.18 }}
-                                        >
-                                            <ChatBubble role={m.role} text={m.content} />
-                                        </motion.div>
-                                    ))}
-                                    {busy && !messages.some((x) => x.id === "draft") && (
-                                        <motion.div
-                                            initial={{ opacity: 0, y: 8 }}
-                                            animate={{ opacity: 1, y: 0 }}
-                                            transition={{ duration: 0.18 }}
-                                        >
-                                            <ChatBubble role="assistant" text="" typing />
-                                        </motion.div>
-                                    )}
-                                </div>
-                            </div>
-
-                            {/* Debug events */}
-                            {showDebug && (
-                                <div className="mt-3 grid gap-3 md:grid-cols-2">
-                                    <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white/70 dark:bg-slate-900/40 p-3 sm:p-4 text-sm">
-                                        <div className="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-2">
-                                            NDJSON Events
-                                        </div>
-                                        <div className="max-h-56 overflow-auto font-mono text-[12px] leading-relaxed whitespace-pre-wrap">
-                                            {ndjsonEvents.map((e, i) => (
-                                                <div
-                                                    key={`n-${i}`}
-                                                    className="py-1 border-b border-slate-100/70 dark:border-slate-800/60 last:border-0"
-                                                >
-                                                    {JSON.stringify(e)}
-                                                </div>
-                                            ))}
-                                        </div>
-                                    </div>
-                                    <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white/70 dark:bg-slate-900/40 p-3 sm:p-4 text-sm">
-                                        <div className="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-2">
-                                            SSE Events
-                                        </div>
-                                        <div className="max-h-56 overflow-auto font-mono text-[12px] leading-relaxed whitespace-pre-wrap">
-                                            {sseEvents.map((e, i) => (
-                                                <div
-                                                    key={`s-${i}`}
-                                                    className="py-1 border-b border-slate-100/70 dark:border-slate-800/60 last:border-0"
-                                                >
-                                                    {JSON.stringify(e)}
-                                                </div>
-                                            ))}
-                                        </div>
-                                    </div>
+                        {/* 会话列表 */}
+                        <div className="flex-1 overflow-y-auto px-3 pb-3">
+                            {filtered.length === 0 && (
+                                <div className="py-6 text-center text-xs text-slate-500">
+                                    没有匹配的会话
                                 </div>
                             )}
+                            <div className="space-y-1">
+                                {filtered.map((c) => (
+                                    <button
+                                        key={c.id}
+                                        onClick={() => {
+                                            setActiveId(c.id);
+                                            setEvents([]);
+                                            setInput("");
+                                        }}
+                                        className={`w-full rounded-2xl border px-3 py-2 text-left text-sm transition hover:bg-slate-100 ${
+                                            c.id === activeId
+                                                ? "border-slate-900 bg-slate-900 text-white"
+                                                : "border-transparent bg-transparent"
+                                        }`}
+                                    >
+                                        <div className="flex items-center gap-2">
+                                            <div className="flex-1 min-w-0 truncate text-xs font-medium">
+                                                {c.title || UNTITLED}
+                                            </div>
+                                            <div className="flex items-center gap-1 text-[10px] text-slate-400">
+                                                <button
+                                                    type="button"
+                                                    onPointerDown={(e) => {
+                                                        e.preventDefault();
+                                                        e.stopPropagation();
+                                                    }}
+                                                    onMouseDown={(e) => {
+                                                        e.preventDefault();
+                                                        e.stopPropagation();
+                                                    }}
+                                                    onClick={(e) => {
+                                                        e.preventDefault();
+                                                        e.stopPropagation();
+                                                        requestRename(c.id);
+                                                    }}
+                                                    className={`rounded p-0.5 ${
+                                                        c.id === activeId
+                                                            ? "hover:bg-white/20"
+                                                            : "hover:bg-slate-100"
+                                                    }`}
+                                                    title="重命名"
+                                                >
+                                                    <Pencil className="h-3 w-3" />
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onPointerDown={(e) => {
+                                                        e.preventDefault();
+                                                        e.stopPropagation();
+                                                    }}
+                                                    onMouseDown={(e) => {
+                                                        e.preventDefault();
+                                                        e.stopPropagation();
+                                                    }}
+                                                    onClick={(e) => {
+                                                        e.preventDefault();
+                                                        e.stopPropagation();
+                                                        requestDelete(c.id);
+                                                    }}
+                                                    className={`rounded p-0.5 ${
+                                                        c.id === activeId
+                                                            ? "hover:bg-white/20"
+                                                            : "hover:bg-slate-100"
+                                                    }`}
+                                                    title="删除"
+                                                >
+                                                    <Trash2 className="h-3 w-3" />
+                                                </button>
+                                            </div>
+                                        </div>
+                                        <div className="mt-0.5 text-[11px] text-slate-500 line-clamp-2">
+                                            {convMessages[c.id]?.[convMessages[c.id].length - 1]?.content ??
+                                                "(空)"}
+                                        </div>
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
 
-                            {/* Composer */}
-                            <div className="sticky bottom-4 mt-4">
-                                <div className="relative rounded-2xl border border-slate-200 dark:border-slate-800 bg-white/80 dark:bg-slate-900/60 backdrop-blur p-2 shadow-sm">
-                  <textarea
-                      value={input}
-                      onChange={(e) => setInput(e.target.value)}
-                      onKeyDown={handleKey}
-                      placeholder="和我聊聊… (Enter 发送，Shift+Enter 换行)"
-                      className="w-full resize-none bg-transparent outline-none p-3 pr-12 leading-6 max-h-40 h-14 text-sm"
-                  />
+                        {/* 左下角 userId 输入 */}
+                        <div className="border-t border-slate-200 bg-slate-50 px-3 py-2 text-[11px] text-slate-600">
+                            <div className="mb-1 text-[10px] uppercase tracking-wide text-slate-400">
+                                用户标识（userId）
+                            </div>
+                            <div className="flex items-center gap-2">
+                                <input
+                                    id="userIdInput"
+                                    value={userId}
+                                    onChange={(e) => setUserId(e.target.value)}
+                                    placeholder="u1"
+                                    className="h-7 flex-1 rounded-2xl border border-slate-300 bg-white px-3 text-xs outline-none placeholder:text-slate-400 focus:border-slate-500"
+                                />
+                            </div>
+                        </div>
+                    </div>
+                </aside>
+
+                {/* 右侧：主聊天区域 */}
+                <div className="flex h-full flex-1 flex-col">
+                    {/* 顶部栏 */}
+                    <header className="flex h-12 flex-none items-center justify-between border-b border-slate-200 bg-white px-3 sm:px-6">
+                        <div className="flex items-center gap-2">
+                            <button
+                                onClick={() => setSidebarOpen((v) => !v)}
+                                className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-slate-300 bg-white hover:bg-slate-100 sm:hidden"
+                                title="切换会话栏"
+                            >
+                                <Menu className="h-4 w-4" />
+                            </button>
+                            <div className="text-sm font-medium">Javelin · Chat</div>
+                            <span className="hidden text-xs text-slate-500 sm:inline">
+                                {USE_DEMO ? "Demo 模式" : "已连接后端 · SSE + NDJSON"}
+                            </span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                            <button
+                                onClick={() => setShowDebug((v) => !v)}
+                                className="inline-flex items-center gap-1 rounded-full border border-slate-300 bg-white px-2.5 py-1 text-[11px] hover:bg-slate-100"
+                            >
+                                <Bug className="h-3.5 w-3.5" />
+                                {showDebug ? "隐藏事件" : "事件"}
+                            </button>
+                            {busy ? (
+                                <button
+                                    onClick={handleStop}
+                                    className="inline-flex items-center gap-1 rounded-full border border-slate-300 bg-white px-3 py-1.5 text-[11px] hover:bg-slate-100"
+                                >
+                                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                    停止
+                                </button>
+                            ) : (
+                                <button
+                                    onClick={createConversation}
+                                    className="inline-flex items-center gap-1 rounded-full border border-slate-300 bg-white px-3 py-1.5 text-[11px] hover:bg-slate-100"
+                                >
+                                    <Plus className="h-3.5 w-3.5" />
+                                    新对话
+                                </button>
+                            )}
+                        </div>
+                    </header>
+
+                    {/* 中间区域：消息 + 调试 + 输入框（内联画板，高度固定，内部滚动） */}
+                    <main className="flex flex-1 justify-center bg-white overflow-hidden">
+                        <div className="flex h-full w-full max-w-3xl flex-col px-3 sm:px-6">
+                            {/* 中间：消息 + 调试（这一块内部滚动） */}
+                            <div className="flex-1 min-h-0 flex flex-col">
+                                {/* 消息列表：占满剩余空间，内部滚动 */}
+                                <div
+                                    ref={listRef}
+                                    className="flex-1 min-h-0 flex flex-col overflow-y-auto py-4"
+                                >
+                                    {messages.length === 0 && <EmptyState />}
+
+                                    <div className="space-y-3">
+                                        {messages.map((m) => (
+                                            <motion.div
+                                                key={m.id}
+                                                initial={{ opacity: 0, y: 8 }}
+                                                animate={{ opacity: 1, y: 0 }}
+                                                transition={{ duration: 0.18 }}
+                                            >
+                                                <ChatBubble role={m.role} text={m.content} />
+                                            </motion.div>
+                                        ))}
+                                        {busy && !messages.some((x) => x.id === "draft") && (
+                                            <motion.div
+                                                initial={{ opacity: 0, y: 8 }}
+                                                animate={{ opacity: 1, y: 0 }}
+                                                transition={{ duration: 0.18 }}
+                                            >
+                                                <ChatBubble role="assistant" text="" typing />
+                                            </motion.div>
+                                        )}
+                                    </div>
+                                </div>
+
+                                {/* 调试事件：在消息列表下面，同样在这一块内滚 */}
+                                {showDebug && (
+                                    <div className="mb-3 grid gap-3 border-t border-slate-200 pt-3 text-xs md:grid-cols-2">
+                                        <div className="rounded-xl border border-slate-200 bg-slate-50 p-2">
+                                            <div className="mb-1 text-[11px] font-medium text-slate-500">
+                                                NDJSON Events
+                                            </div>
+                                            <div className="max-h-48 overflow-auto font-mono text-[11px] leading-relaxed whitespace-pre-wrap">
+                                                {ndjsonEvents.map((e, i) => (
+                                                    <div
+                                                        key={`n-${i}`}
+                                                        className="border-b border-slate-200/70 py-0.5 last:border-0"
+                                                    >
+                                                        {JSON.stringify(e)}
+                                                    </div>
+                                                ))}
+                                                {ndjsonEvents.length === 0 && (
+                                                    <div className="py-2 text-[11px] text-slate-500">
+                                                        暂无 NDJSON 事件
+                                                    </div>
+                                                )}
+                                            </div>
+                                        </div>
+                                        <div className="rounded-xl border border-slate-200 bg-slate-50 p-2">
+                                            <div className="mb-1 text-[11px] font-medium text-slate-500">
+                                                SSE Events
+                                            </div>
+                                            <div className="max-h-48 overflow-auto font-mono text-[11px] leading-relaxed whitespace-pre-wrap">
+                                                {sseEvents.map((e, i) => (
+                                                    <div
+                                                        key={`s-${i}`}
+                                                        className="border-b border-slate-200/70 py-0.5 last:border-0"
+                                                    >
+                                                        {JSON.stringify(e)}
+                                                    </div>
+                                                ))}
+                                                {sseEvents.length === 0 && (
+                                                    <div className="py-2 text-[11px] text-slate-500">
+                                                        暂无 SSE 事件
+                                                    </div>
+                                                )}
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+
+                            {/* 底部输入区域：固定在画板底部，不参与滚动 */}
+                            <div className="flex-none border-t border-slate-200 bg-white py-3">
+                                {/* 类 ChatGPT 输入框 */}
+                                <div className="relative rounded-3xl border border-slate-300 bg-slate-50 px-4 py-2">
+                                    <textarea
+                                        value={input}
+                                        onChange={(e) => setInput(e.target.value)}
+                                        onKeyDown={handleKey}
+                                        placeholder="向我提问任何问题…（Enter 发送，Shift+Enter 换行）"
+                                        className="h-14 max-h-40 w-full resize-none bg-transparent py-2 pr-10 text-sm leading-6 outline-none placeholder:text-slate-500"
+                                    />
                                     <button
                                         onClick={() => handleSend()}
                                         disabled={busy || !input.trim() || !activeId}
-                                        className="absolute right-3 bottom-3 inline-flex items-center justify-center h-9 w-9 rounded-2xl border border-slate-300/70 dark:border-slate-700 disabled:opacity-50 disabled:cursor-not-allowed hover:bg-slate-100 dark:hover:bg-slate-800"
-                                        title="Send"
+                                        className="absolute bottom-2.5 right-2.5 inline-flex h-8 w-8 items-center justify-center rounded-full bg-slate-900 text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+                                        title="发送"
                                     >
-                                        {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                                        {busy ? (
+                                            <Loader2 className="h-4 w-4 animate-spin" />
+                                        ) : (
+                                            <Send className="h-4 w-4" />
+                                        )}
                                     </button>
                                 </div>
 
-                                {/* ⬇⬇⬇ 新增：文件上传组件 */}
+                                {/* 文件上传 */}
                                 <ChatFileUploader
                                     className="mt-2"
                                     baseUrl={BASE_URL}
@@ -1370,7 +1403,6 @@ export default function JavelinMinimalChat() {
                                     conversationId={activeId}
                                     onUploaded={handleFileUploaded}
                                     onError={(err) => {
-                                        // 同时在对话里打一条错误信息
                                         addMessage({
                                             id: newId(),
                                             role: "assistant",
@@ -1380,42 +1412,41 @@ export default function JavelinMinimalChat() {
                                     }}
                                 />
 
-                                {/* NEW: userId 输入（会话框下方，使用 label+htmlFor，去掉 aria-label） */}
-                                <div className="mt-2 flex items-center gap-2">
-                                    <label htmlFor="userIdInput" className="text-[11px] text-slate-500 dark:text-slate-400">
-                                        userId
-                                    </label>
-                                    <input
-                                        id="userIdInput"
-                                        value={userId}
-                                        onChange={(e) => setUserId(e.target.value)}
-                                        placeholder="u1"
-                                        className="h-8 w-[12rem] rounded-2xl border border-slate-300/70 dark:border-slate-700 bg-transparent px-3 text-sm outline-none"
-                                    />
-                                </div>
-
-
-                                <div className="mt-2 text-[11px] text-slate-500 dark:text-slate-400">
+                                {/* 接口信息（userId 输入已在左下角） */}
+                                <div className="mt-2 text-[11px] text-slate-500">
                                     {USE_DEMO ? (
                                         <>
-                                            Demo mode · streaming fake NDJSON. Set <code>USE_DEMO=false</code> to connect your
-                                            backend.
+                                            Demo 模式 · 正在使用本地模拟 NDJSON。修改{" "}
+                                            <code className="font-mono">USE_DEMO=false</code> 以连接后端。
                                         </>
                                     ) : (
                                         <>
-                                            POST {joinUrl(BASE_URL, NDJSON_PATH)} · Accept: application/x-ndjson · userId=
-                                            <code>{userId || "u1"}</code> · conversationId=
-                                            <code>{activeId}</code>
+                                            POST{" "}
+                                            <code className="font-mono">
+                                                {joinUrl(BASE_URL, NDJSON_PATH)}
+                                            </code>{" "}
+                                            · Accept:{" "}
+                                            <code className="font-mono">
+                                                application/x-ndjson
+                                            </code>{" "}
+                                            · userId=
+                                            <code className="font-mono">
+                                                {userId || "u1"}
+                                            </code>{" "}
+                                            · conversationId=
+                                            <code className="font-mono">
+                                                {activeId}
+                                            </code>
                                         </>
                                     )}
                                 </div>
                             </div>
                         </div>
-                    </motion.main>
+                    </main>
                 </div>
             </div>
 
-            {/* Dialogs */}
+            {/* 删除会话 / 重命名对话的 Dialog */}
             <ConfirmDialog
                 open={!!confirmDelId}
                 title="删除会话"
@@ -1435,7 +1466,11 @@ export default function JavelinMinimalChat() {
 
             <RenameDialog
                 open={!!renameId}
-                initial={renameId ? conversations.find((c) => c.id === renameId)?.title || UNTITLED : UNTITLED}
+                initial={
+                    renameId
+                        ? conversations.find((c) => c.id === renameId)?.title || UNTITLED
+                        : UNTITLED
+                }
                 onSave={(t) => {
                     if (renameId) {
                         doRename(renameId, t);
@@ -1444,41 +1479,59 @@ export default function JavelinMinimalChat() {
                 }}
                 onCancel={() => setRenameId(null)}
             />
-            {/* Pending links queue */}
+
+            {/* 待打开链接队列 */}
             {pendingLinks.length > 0 && (
-                <div className="fixed bottom-4 right-4 z-50 w-[22rem] max-w-[92vw] rounded-xl shadow-lg bg-white border p-3">
-                    <div className="flex items-center justify-between mb-2">
-                        <div className="text-sm font-medium">选择要打开的链接（{pendingLinks.length}）</div>
-                        <div className="flex items-center gap-2">
-                            <button
-                                onClick={() => setPendingLinks([])}
-                                className="px-2 py-1 text-xs rounded-lg border hover:bg-gray-50"
-                            >
-                                清空
-                            </button>
+                <div className="fixed bottom-4 right-4 z-50 w-[22rem] max-w-[92vw] rounded-xl border border-slate-200 bg-white p-3 shadow-xl">
+                    <div className="mb-2 flex items-center justify之间">
+                        <div className="text-sm font-medium">
+                            选择要打开的链接（{pendingLinks.length}）
                         </div>
+                        <button
+                            onClick={() => setPendingLinks([])}
+                            className="rounded-lg border border-slate-300 px-2 py-1 text-[11px] hover:bg-slate-50"
+                        >
+                            清空
+                        </button>
                     </div>
 
-                    <div className="max-h-56 overflow-auto space-y-2">
-                        {pendingLinks.map(it => (
-                            <div key={it.id} className="flex items-center gap-2">
-                                <div className="flex-1 min-w-0 text-xs">
-                                    <div className="font-mono truncate">
-                                        {(() => { try { return new URL(it.url).host; } catch { return it.url; } })()}
+                    <div className="max-h-56 space-y-2 overflow-auto">
+                        {pendingLinks.map((it) => (
+                            <div
+                                key={it.id}
+                                className="flex items-center gap-2 rounded-lg bg-slate-50 px-2 py-1.5"
+                            >
+                                <div className="min-w-0 flex-1 text-xs">
+                                    <div className="font-mono truncate text-slate-900">
+                                        {(() => {
+                                            try {
+                                                return new URL(it.url).host;
+                                            } catch {
+                                                return it.url;
+                                            }
+                                        })()}
                                     </div>
-                                    <div className="opacity-60 truncate">{it.url}</div>
+                                    <div className="truncate text-[11px] text-slate-500">
+                                        {it.url}
+                                    </div>
                                 </div>
                                 <button
-                                    onMouseDown={(e) => { e.preventDefault(); openOne(it.id); }}
-                                    className="px-2 py-1 text-xs rounded-lg bg-black text-white hover:opacity-90"
+                                    onMouseDown={(e) => {
+                                        e.preventDefault();
+                                        openOne(it.id);
+                                    }}
+                                    className="rounded-lg bg-slate-900 px-2 py-1 text-[11px] font-medium text-white hover:bg-slate-800"
                                     title="打开此链接"
                                 >
                                     打开
                                 </button>
-
                                 <button
-                                    onClick={() => setPendingLinks(prev => prev.filter(x => x.id !== it.id))}
-                                    className="px-2 py-1 text-xs rounded-lg border hover:bg-gray-50"
+                                    onClick={() =>
+                                        setPendingLinks((prev) =>
+                                            prev.filter((x) => x.id !== it.id),
+                                        )
+                                    }
+                                    className="rounded-lg border border-slate-300 px-2 py-1 text-[11px] hover:bg-slate-50"
                                     title="移除"
                                 >
                                     ×
@@ -1488,10 +1541,10 @@ export default function JavelinMinimalChat() {
                     </div>
                 </div>
             )}
-
-
         </div>
     );
+
+
 }
 
 function EmptyState() {

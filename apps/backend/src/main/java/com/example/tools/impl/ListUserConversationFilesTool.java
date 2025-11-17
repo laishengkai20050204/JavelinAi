@@ -75,14 +75,16 @@ public class ListUserConversationFilesTool implements AiTool {
 
         List<AiFile> all = aiFileService.listUserConversationFiles(userId, conversationId);
         if (all == null || all.isEmpty()) {
-            String summary = String.format("No files found for user %s in conversation %s.", userId, conversationId);
+            String text = "当前对话中还没有可用的上传文件。"
+                    + "如果需要处理本地文件（例如文档、图片、代码等），请先上传文件。";
+
             Map<String, Object> data = new LinkedHashMap<>();
             data.put("userId", userId);
             data.put("conversationId", conversationId);
             data.put("count", 0);
             data.put("files", List.of());
             data.put("_source", "ai_file");
-            data.put("text", summary);
+            data.put("text", text);
             return ToolResult.success(null, name(), false, data);
         }
 
@@ -102,7 +104,10 @@ public class ListUserConversationFilesTool implements AiTool {
                     m.put("sizeBytes", f.getSizeBytes());
                     m.put("mimeType", f.getMimeType());
                     m.put("sha256", f.getSha256());
-                    try { m.put("createdAt", f.getCreatedAt()); } catch (Exception ignore) {}
+                    try {
+                        m.put("createdAt", f.getCreatedAt());
+                    } catch (Exception ignore) {
+                    }
 
                     try {
                         String url = storageService
@@ -125,12 +130,29 @@ public class ListUserConversationFilesTool implements AiTool {
         data.put("files", fileDtos);
         data.put("_source", "ai_file");
 
-        String summary = String.format("Found %d file(s) (limit %d) for user %s in conversation %s.",
-                fileDtos.size(), limit, userId, conversationId);
-        data.put("text", summary);
+        // ⭐ 核心改动：text 字段直接列出每个文件及其 URL，便于 LLM / 前端直接阅读和复制
+        StringBuilder sb = new StringBuilder();
+        sb.append("最近上传的文件列表（最多返回 ").append(limit).append(" 个）：\n");
+        for (int i = 0; i < fileDtos.size(); i++) {
+            Map<String, Object> f = fileDtos.get(i);
+            String filename = Objects.toString(f.get("filename"), "(无文件名)");
+            Object urlObj = f.get("url");
+            String url = (urlObj == null) ? "(预签名 URL 生成失败)" : urlObj.toString();
+
+            sb.append("- #")
+                    .append(i + 1)
+                    .append(" ")
+                    .append(filename)
+                    .append(" -> ")
+                    .append(url)
+                    .append("\n");
+        }
+
+        data.put("text", sb.toString());
 
         return ToolResult.success(null, name(), false, data);
     }
+
 
     private static int normalizeInt(Object value, int def, int min, int max) {
         int n = def;
