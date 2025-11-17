@@ -364,6 +364,9 @@ export default function JavelinMinimalChat() {
     const accumulatedRef = useRef<string>(""); // 仅由 SSE 构建的累积文本
     const currentSseStepIdRef = useRef<string | null>(null); // 防止同 step 重复订阅
 
+    // ✅ 新增：记录“已经为哪些 stepId 打开过 SSE”
+    const openedSseStepIdsRef = useRef<Set<string>>(new Set());
+
     // Derived
     const messages = useMemo(() => convMessages[activeId] ?? [], [convMessages, activeId]);
 
@@ -585,7 +588,6 @@ export default function JavelinMinimalChat() {
             esRef.current.close();
             esRef.current = null;
         }
-        currentSseStepIdRef.current = null;
         accumulatedRef.current = "";
 
         const id = `c_${newId()}`;
@@ -644,7 +646,6 @@ export default function JavelinMinimalChat() {
             esRef.current.close();
             esRef.current = null;
         }
-        currentSseStepIdRef.current = null;
         accumulatedRef.current = "";
     }
 
@@ -656,9 +657,10 @@ export default function JavelinMinimalChat() {
         const sidData = (isRecord(line?.data) && typeof (line.data as any)["stepId"] === "string") ? String((line.data as any)["stepId"]) : null;
         const sid = sidTop || sidData || null;
 
-        // 打开 SSE（只开一次）
-        if (!USE_DEMO && sid && currentSseStepIdRef.current !== sid) {
-            currentSseStepIdRef.current = sid;
+        // 打开 SSE（同一个 stepId 全局只开一次）
+        if (!USE_DEMO && sid && !openedSseStepIdsRef.current.has(sid)) {
+            openedSseStepIdsRef.current.add(sid);   // 记录已经打开过
+            currentSseStepIdRef.current = sid;      // 这个可以保留当“最近的 stepId”，只是观测用
             startSSE(sid);
         }
 
@@ -885,7 +887,6 @@ export default function JavelinMinimalChat() {
             esRef.current.close();
             esRef.current = null;
         }
-        currentSseStepIdRef.current = null;
         accumulatedRef.current = "";
         processedCallIdsRef.current.clear();
         setBusy(false);
@@ -912,28 +913,38 @@ export default function JavelinMinimalChat() {
 
             es.onmessage = (e: MessageEvent) => {
                 if (e.data === "[DONE]") {
-                    setEvents((prev) => [...prev, { event: "sse-done", ts: Date.now(), data: {} }]);
-                    finalizeDraft();
-                    setBusy(false);
+                    // 这里只表示“当前这一轮 LLM 流式结束”，
+                    // 对于多轮编排，不代表整个 step 完成，所以不要 finalize。
+                    setEvents((prev) => [
+                        ...prev,
+                        { event: "sse-done", ts: Date.now(), data: {} },
+                    ]);
                     return;
                 }
+
                 try {
                     const obj = JSON.parse(e.data) as unknown;
 
-                    // 先处理 clientCalls 包：{ type:"clientCalls", calls:[...] }
+                    // clientCalls 包（保持不变）
                     if (isRecord(obj) && obj["type"] === "clientCalls" && Array.isArray((obj as any).calls)) {
                         for (const c of (obj as any).calls) scheduleClientCall(stepId, c);
-                        setEvents(prev => [...prev, { event: "sse-clientCalls", ts: Date.now(), data: obj as any }]);
+                        setEvents((prev) => [
+                            ...prev,
+                            { event: "sse-clientCalls", ts: Date.now(), data: obj as any },
+                        ]);
                         return;
                     }
 
-                    // ✅ 先看看是不是“前端工具调用”信号；如果是，直接执行并回填
+                    // 前端工具信号（保持不变）
                     if (handleToolMessage(stepId, obj)) {
-                        setEvents((prev) => [...prev, { event: "sse-client-tool", ts: Date.now(), data: obj as any }]);
+                        setEvents((prev) => [
+                            ...prev,
+                            { event: "sse-client-tool", ts: Date.now(), data: obj as any },
+                        ]);
                         return;
                     }
 
-                    // 空 delta：直接忽略（常见 keep-alive / 空结构化片段）
+                    // 空 delta（保持不变）
                     if (sseIsEmptyDelta(obj)) {
                         setEvents((prev) => [
                             ...prev,
@@ -942,11 +953,13 @@ export default function JavelinMinimalChat() {
                         return;
                     }
 
+                    // 正常流式内容（保持不变）
                     const chunk = sseExtractDeltaContent(obj);
                     if (typeof chunk === "string" && chunk) {
                         accumulatedRef.current += chunk;
                         replaceDraftContent(accumulatedRef.current);
                     }
+
                     setEvents((prev) => [
                         ...prev,
                         { event: "sse-message", ts: Date.now(), data: isRecord(obj) ? obj : { raw: e.data } },
@@ -963,7 +976,6 @@ export default function JavelinMinimalChat() {
                 setEvents((prev) => [...prev, { event: "sse-error", ts: Date.now(), data: {} }]);
                 es.close();
                 esRef.current = null;
-                currentSseStepIdRef.current = null;
                 setBusy(false);
             };
 
@@ -985,7 +997,6 @@ export default function JavelinMinimalChat() {
                         setBusy(false);
                         es.close();
                         esRef.current = null;
-                        currentSseStepIdRef.current = null;
                     }
                 });
             });

@@ -170,7 +170,7 @@ public class WebSearchTool implements AiTool {
             data.put("_provider", "serper");
             data.put("_endpoint", endpoint);
             data.put("_q", rawQ);
-            data.put("text", summarizeResults(rawQ, type, payload));
+            data.put("text", buildReadableText(rawQ, type, payload));
 
             return ToolResult.success(null, name(), false, data);
         } catch (WebClientResponseException wex) {
@@ -209,24 +209,69 @@ public class WebSearchTool implements AiTool {
         };
     }
 
-    private String summarizeResults(String rawQuery, String type, List<Map<String, Object>> results) {
+    /**
+     * 可读字段：把所有搜索结果展开成纯文本列表，给 LLM / 人类直接阅读。
+     */
+    private String buildReadableText(String rawQuery, String type, List<Map<String, Object>> results) {
         String query = rawQuery == null ? "" : rawQuery.trim();
         String kind = !StringUtils.hasText(type) ? "web" : type;
+
         if (results == null || results.isEmpty()) {
             return String.format("web_search (%s) found no results for \"%s\".", kind, query);
         }
-        Map<String, Object> first = results.get(0);
-        String title = first == null ? null : str(first.get("title"));
-        String snippet = first == null ? null : str(first.get("snippet"));
-        String url = first == null ? null : str(first.get("url"));
-        String highlight = StringUtils.hasText(title) ? title
-                : (StringUtils.hasText(snippet) ? snippet : url);
-        return String.format("web_search (%s) returned %d result(s) for \"%s\". Top: %s",
-                kind,
-                results.size(),
-                query,
-                StringUtils.hasText(highlight) ? highlight : "no title/url");
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("web_search (").append(kind).append(") results for \"")
+                .append(query).append("\":\n\n");
+
+        int idx = 1;
+        for (Map<String, Object> item : results) {
+            if (item == null) continue;
+
+            String title = str(item.get("title"));
+            String url = str(item.get("url"));
+            String snippet = str(item.get("snippet"));
+            String publishedAt = str(item.get("publishedAt"));  // news 用
+            String thumbnail = str(item.get("thumbnail"));      // images 用
+
+            sb.append(idx++).append(". ");
+
+            // 标题
+            if (StringUtils.hasText(title)) {
+                sb.append(title);
+            } else if (StringUtils.hasText(url)) {
+                sb.append(url);
+            } else {
+                sb.append("(no title)");
+            }
+            sb.append("\n");
+
+            // URL
+            if (StringUtils.hasText(url)) {
+                sb.append("   URL: ").append(url).append("\n");
+            }
+
+            // 摘要
+            if (StringUtils.hasText(snippet)) {
+                sb.append("   Snippet: ").append(snippet).append("\n");
+            }
+
+            // 新闻时间
+            if ("news".equalsIgnoreCase(kind) && StringUtils.hasText(publishedAt)) {
+                sb.append("   PublishedAt: ").append(publishedAt).append("\n");
+            }
+
+            // 图片缩略图
+            if ("images".equalsIgnoreCase(kind) && StringUtils.hasText(thumbnail)) {
+                sb.append("   Thumbnail: ").append(thumbnail).append("\n");
+            }
+
+            sb.append("\n");
+        }
+
+        return sb.toString().trim();
     }
+
 
     private static String def(String v, String d) { return StringUtils.hasText(v) ? v : d; }
     private static String str(Object o) { return o == null ? null : String.valueOf(o); }
