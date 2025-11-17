@@ -316,100 +316,57 @@ public class ContextAssemblerImpl implements ContextAssembler {
      * 只做自然语言说明 + 少量参数摘要，防止模型学坏格式。
      */
     private String summarizeToolInteraction(String toolName, String messageId, String argsJson) {
+        String safeToolName = (toolName == null || toolName.isBlank())
+                ? "unknown_tool"
+                : toolName;
+
         StringBuilder sb = new StringBuilder();
 
-        String safeToolName = (toolName == null ? "unknown_tool" : toolName);
-
-        sb.append("（回顾信息）本次对话的历史中，曾经调用过一个工具步骤：\n");
+        sb.append("【历史工具调用摘要】\n");
         sb.append("- 工具名: ").append(safeToolName).append("\n");
-        if (messageId != null && !messageId.isBlank()) {
-            sb.append("- 消息ID (conversation_messages.id): ").append(messageId).append("\n");
+
+        boolean hasId = (messageId != null && !messageId.isBlank());
+        if (hasId) {
+            sb.append("- message_id: ").append(messageId).append("\n");
         } else {
-            sb.append("- 消息ID: （未记录或不可用）\n");
+            sb.append("- message_id: （未知或未记录）\n");
         }
 
-        // ===== 参数摘要（避免整坨 JSON） =====
-        if (argsJson != null && !argsJson.isBlank()) {
+        // 可选：针对 python_exec，给一个极短的 code 预览（只取第一行，防止撑爆上下文）
+        if ("python_exec".equals(safeToolName) && argsJson != null && !argsJson.isBlank()) {
             try {
                 var node = objectMapper.readTree(argsJson);
+                String code = node.path("code").asText(null);
+                if (code != null && !code.isBlank()) {
+                    String preview = code.strip();
 
-                // 针对 python_exec 做一点友好处理：把 code / userId / conversationId 摘要一下
-                if ("python_exec".equals(safeToolName)) {
-                    String code = node.path("code").asText(null);
-                    String userIdArg = node.path("userId").asText(null);
-                    String convIdArg = node.path("conversationId").asText(null);
-
-                    sb.append("这一步调用大致是执行了一段 Python 代码");
-                    if (userIdArg != null || convIdArg != null) {
-                        sb.append("（");
-                        if (userIdArg != null) {
-                            sb.append("userId=").append(userIdArg);
-                            if (convIdArg != null) sb.append(", ");
-                        }
-                        if (convIdArg != null) {
-                            sb.append("conversationId=").append(convIdArg);
-                        }
-                        sb.append("）");
+                    // 只要第一行
+                    int newline = preview.indexOf('\n');
+                    if (newline >= 0) {
+                        preview = preview.substring(0, newline);
                     }
-                    sb.append("。\n");
 
-                    if (code != null && !code.isBlank()) {
-                        String preview = code.trim();
-                        int maxLen = 120;
-                        if (preview.length() > maxLen) {
-                            preview = preview.substring(0, maxLen) + "...(代码已截断)";
-                        }
-                        sb.append("当时传入的 code 片段示例：\n");
-                        sb.append(preview).append("\n");
+                    int maxLen = 80;
+                    if (preview.length() > maxLen) {
+                        preview = preview.substring(0, maxLen) + "...";
                     }
-                } else {
-                    // 通用工具：列几个顶层字段名 + 简短 value 摘要
-                    sb.append("当时调用时使用了一些参数，主要字段包括：");
 
-                    List<String> fields = new ArrayList<>();
-                    node.fieldNames().forEachRemaining(fields::add);
-
-                    if (fields.isEmpty()) {
-                        sb.append("（无显式字段）\n");
-                    } else {
-                        // 只展示前几个 key，避免太长
-                        int maxFields = Math.min(5, fields.size());
-                        sb.append("\n");
-                        for (int i = 0; i < maxFields; i++) {
-                            String f = fields.get(i);
-                            var v = node.get(f);
-                            String vStr;
-                            if (v.isTextual()) {
-                                vStr = v.asText();
-                                if (vStr.length() > 60) {
-                                    vStr = vStr.substring(0, 60) + "...";
-                                }
-                            } else if (v.isNumber() || v.isBoolean()) {
-                                vStr = v.toString();
-                            } else {
-                                vStr = v.toString();
-                                if (vStr.length() > 60) {
-                                    vStr = vStr.substring(0, 60) + "...";
-                                }
-                            }
-                            sb.append("- ").append(f).append(" = ").append(vStr).append("\n");
-                        }
-                        if (fields.size() > maxFields) {
-                            sb.append("…（其余字段已省略，以节省上下文长度）\n");
-                        }
-                    }
+                    sb.append("- 执行代码示例: ").append(preview).append("\n");
                 }
-            } catch (Exception e) {
-                // JSON 解析失败，就退回到一句粗略描述
-                sb.append("（当时调用时使用了一些 JSON 参数，这里因解析失败未展开。）\n");
+            } catch (Exception ignore) {
+                // 解析失败就直接略过，不额外加噪音
             }
-        } else {
-            sb.append("（这一步调用没有显式的参数 JSON，或记录为空。）\n");
         }
 
-        // 重点：告诉它如何用 inspect_tool_output 拿完整信息
-        sb.append("如果你在后续回答中需要查看这一步工具调用的完整输出，");
-        sb.append("请调用工具 `inspect_tool_output`，并将参数 `message_id` 设置为上面提到的消息ID。");
+        sb.append("\n如果你需要查看这次调用的完整输出，");
+        sb.append("请调用工具 `inspect_tool_output`。");
+
+        if (hasId) {
+            sb.append("参数请**直接照抄**下面这段 JSON：\n");
+            sb.append("{\"message_id\": ").append(messageId).append("}\n");
+        } else {
+            sb.append("并把相应的消息ID填入参数 `message_id` 中，例如：`{\"message_id\": 123}`。\n");
+        }
 
         return sb.toString();
     }

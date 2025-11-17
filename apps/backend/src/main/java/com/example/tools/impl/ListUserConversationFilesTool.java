@@ -33,9 +33,7 @@ public class ListUserConversationFilesTool implements AiTool {
     @Override
     public String description() {
         // 说明清楚：是“当前用户 + 当前会话”，从上下文注入，不需要模型自己传 userId/convId
-        return "List recent files uploaded by the **current user in the current conversation**. "
-                + "The userId and conversationId are taken from the execution context automatically; "
-                + "you only need to optionally provide `limit`.";
+        return "列出用户最近在这个对话上传的文件";
     }
 
     @Override
