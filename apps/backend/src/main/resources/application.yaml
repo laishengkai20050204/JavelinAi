@@ -37,7 +37,7 @@ ai:
       max-in-memory-bytes: 524288   # 512KB
       default-max-chars: 2000
       user-agent: JavelinAI-WebFetch/1.0
-      ssrf-guard-enabled: true
+      ssrf-guard-enabled: false
     python:
       enabled: true
       use-docker: true
