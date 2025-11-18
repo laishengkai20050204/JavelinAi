@@ -25,9 +25,9 @@ import java.time.Duration;
 import java.util.*;
 
 /**
- * web_fetch：抓�?URL 并抽取可读正文，控制长度回灌模型
+ * web_fetch：抓取URL 并抽取可读正文，控制长度回灌模型
  *
- * 参数�?
+ * 参数
  *  - url (string, 必填)
  *  - max_chars (int, 默认 props.defaultMaxChars)
  *  - selector (string, 可选；如启�?jsoup 则按 CSS 选择器抽取，否则忽略)

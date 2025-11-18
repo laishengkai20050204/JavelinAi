@@ -138,15 +138,19 @@ public class ListUserConversationFilesTool implements AiTool {
             String filename = Objects.toString(f.get("filename"), "(无文件名)");
             Object urlObj = f.get("url");
             String url = (urlObj == null) ? "(预签名 URL 生成失败)" : urlObj.toString();
+            String id = Objects.toString(f.get("id"), "(无id)");
 
             sb.append("- #")
                     .append(i + 1)
-                    .append(" ")
+                    .append(" [id=")
+                    .append(id)
+                    .append("] ")
                     .append(filename)
                     .append(" -> ")
                     .append(url)
                     .append("\n");
         }
+
 
         data.put("text", sb.toString());
 
