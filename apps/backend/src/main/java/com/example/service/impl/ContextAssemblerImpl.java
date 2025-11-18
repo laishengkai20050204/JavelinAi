@@ -14,6 +14,9 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
 
+import java.time.LocalDate;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -26,6 +29,37 @@ public class ContextAssemblerImpl implements ContextAssembler {
     private final ObjectMapper objectMapper;
     private final StepContextStore stepStore;
     private final EffectiveProps effectiveProps;
+    private static final DateTimeFormatter DATE_FMT =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd");
+
+    static final String SYSTEM_PROMPT_TEMPLATE = """
+You are a concise, accurate assistant in a developer-oriented tool-calling system.
+
+Today is %s.
+
+You have access to function-calling tools (see the provided tool list). One key tool is `python_exec`,
+which can run Python code in an isolated workspace with packages and files.
+
+General rules:
+- Prefer calling tools for non-trivial coding, calculation, data processing, web access, memory lookup,
+  or file/image handling, instead of only reasoning in natural language.
+- For simple questions you can reliably answer from your own knowledge, you may answer directly.
+- For complex, multi-step tasks, you may first call a planning tool (e.g. `plan_task`) to outline the
+  goal and steps, then follow that plan with further tool calls and a final answer.
+
+Formatting rules:
+- All answers must be valid Markdown.
+- When you need to write mathematical expressions or equations, use LaTeX math syntax:
+  - use `$...$` for inline math;
+  - use `$$...$$` for display equations on their own line.
+- Do NOT put LaTeX math inside ```code fences``` unless the user explicitly asks to see the raw LaTeX.
+
+Tool-calling protocol:
+- When calling a tool, you MUST use the structured `tool_calls` field.
+- Do NOT describe tool calls in normal text, and do NOT put tool-call JSON into `content`.
+- Assistant messages that contain `tool_calls` should usually have empty `content`.
+- After tools finish, read their outputs carefully and give the user a clear, concise summary and conclusion.
+""";
 
     @Override
     public Mono<AssembledContext> assemble(StepState st) {
@@ -55,33 +89,11 @@ public class ContextAssemblerImpl implements ContextAssembler {
         if (!stepRows.isEmpty()) rows.addAll(stepRows);
 
 
-// 3) 单趟构造最终 messages（严格按 DB 顺序）
-        final String SYSTEM_PROMPT = """
-        You are a helpful assistant who writes concise, accurate answers in a developer-oriented tool-calling system.
-        
-        You have access to function-calling tools. In particular, you have a powerful tool called `python_exec` that can run Python code in its own isolated environment with a writable workspace and installed packages.
-        
-        With `python_exec` you can, for example:
-        - run and debug Python scripts;
-        - perform complex calculations, simulations, and data analysis;
-        - parse and transform text or files;
-        - read and write files in the workspace, and generate artifacts such as CSV/JSON, images, or documents.
-        
-        General tool-use rules:
-        - Whenever a task involves non-trivial calculation, coding, data processing, parsing, simulation, or file generation, you SHOULD prefer calling `python_exec` instead of only reasoning in natural language.
-        - If tools are available and helpful, you MUST propose function-calling tool calls rather than claiming you "cannot run code" or "do not have an environment", unless it is clearly impossible even with the tools.
-        - If a question can be reliably answered from your own knowledge without tools, you may answer directly, but you should still consider whether a tool could make the answer more precise or verifiable.
-        - After using tools, summarize the essential results clearly and concisely for the user.
-        
-        Structured tool-calling protocol:
-        - When you decide to call a tool, you MUST use the structured `tool_calls` field in your response.
-        - Do NOT describe tool invocations in natural language (for example, do NOT write things like "[工具 xxx 的执行_params] {...}" or similar).
-        - Do NOT output JSON that describes a tool invocation inside the `content` field; JSON for tool calls must only appear inside `tool_calls[x].function.arguments`.
-        - For assistant messages that contain `tool_calls`, the `content` field should usually be empty.
-        """;
+        // 3) 单趟构造最终 messages（严格按 DB 顺序）
+
 
         List<Map<String, Object>> modelMessages = new ArrayList<>();
-        modelMessages.add(Map.of("role", "system", "content", SYSTEM_PROMPT));
+        modelMessages.add(Map.of("role", "system", "content", buildSystemPrompt()));
 
         // 可选：为了向后兼容你原有 AssembledContext 字段，顺便维护：
         final List<ChatMessage> plainTexts = new ArrayList<>();        // 非工具行的扁平文本（user/assistant）
@@ -303,6 +315,14 @@ public class ContextAssemblerImpl implements ContextAssembler {
         // ---------- 其它角色（user / system / etc.） ----------
         modelMessages.add(Map.of("role", roleStr, "content", text));
         plainTexts.add(new ChatMessage(roleStr, text));
+    }
+
+    // 每次需要系统提示词时调用这个方法
+    public static String buildSystemPrompt() {
+        // 这里你可以改时区，比如 Asia/Shanghai
+        LocalDate today = LocalDate.now(ZoneId.of("Asia/Shanghai"));
+        String dateStr = today.format(DATE_FMT);
+        return SYSTEM_PROMPT_TEMPLATE.formatted(dateStr);
     }
 
     /**

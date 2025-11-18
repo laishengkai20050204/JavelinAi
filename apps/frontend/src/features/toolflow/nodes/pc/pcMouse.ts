@@ -3,15 +3,21 @@ import { ClassicPreset } from "rete";
 import { controlSocket, numberSocket } from "../basic";
 import { registerNode } from "../../core/nodeRegistry";
 
+const CURRENT_ORIGIN =
+    typeof window !== "undefined" && window.location ? window.location.origin : "";
+const DEFAULT_BASE_URL = CURRENT_ORIGIN || "";
+
 // ===== 通用小工具函数 =====
 function toNumber(v: any, fallback: number): number {
     const n = typeof v === "number" ? v : Number(v);
     return Number.isFinite(n) ? n : fallback;
 }
 
-// 从 api.ctx 里拿 baseUrl，没有就用默认值
+// 从 api.ctx 里拿 baseUrl，没有就用当前站点
 function getBaseUrl(api: any): string {
-    return (api?.ctx?.pcAgentBaseUrl as string | undefined) ?? "http://127.0.0.1:5001";
+    const raw = (api?.ctx?.pcAgentBaseUrl as string | undefined) ?? DEFAULT_BASE_URL;
+    if (!raw) return "";
+    return raw.endsWith("/") ? raw.slice(0, -1) : raw;
 }
 
 // ===================== MouseMove =====================

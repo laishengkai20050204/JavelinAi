@@ -33,6 +33,21 @@
         </trim>
     </sql>
 
+    <select id="listConversationSummaries" resultType="com.example.service.dto.ConversationSummary">
+        SELECT
+            user_id AS userId,
+            conversation_id AS conversationId,
+            COUNT(*) AS messageCount,
+            MAX(created_at) AS lastMessageAt
+        FROM conversation_messages
+        WHERE state = 'FINAL'
+        <if test="userId != null and userId != ''">
+            AND user_id = #{userId}
+        </if>
+        GROUP BY user_id, conversation_id
+        ORDER BY lastMessageAt DESC
+    </select>
+
     <select id="selectHistory" resultMap="ConversationMessageMap">
         SELECT
         <include refid="baseColumns"/>

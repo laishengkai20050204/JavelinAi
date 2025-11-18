@@ -1,5 +1,6 @@
 package com.example.mapper;
 
+import com.example.service.dto.ConversationSummary;
 import com.example.service.impl.entity.ConversationMessageEntity;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
@@ -10,6 +11,8 @@ import java.util.Map;
 
 @Mapper
 public interface ConversationMemoryMapper {
+
+    List<ConversationSummary> listConversationSummaries(@Param("userId") String userId);
 
     List<ConversationMessageEntity> selectHistory(@Param("userId") String userId,
                                                   @Param("conversationId") String conversationId);

@@ -41,7 +41,10 @@ function rewriteToCurrentOrigin(url: string): string {
     }
 }
 
-const DEFAULT_BASE_URL = "/";
+const CURRENT_ORIGIN =
+    typeof window !== "undefined" && window.location ? window.location.origin : "";
+
+const DEFAULT_BASE_URL = CURRENT_ORIGIN || "/";
 
 const joinUrl = (a: string, b: string) =>
     (a.endsWith("/") ? a.slice(0, -1) : a) + b;
@@ -96,7 +99,7 @@ export const ChatFileUploader: React.FC<ChatFileUploaderProps> = ({
                 url: rewriteToCurrentOrigin(data.url),
             };
 
-            onUploaded?.(data, selectedFile);
+            onUploaded?.(normalized, selectedFile);
             setSelectedFile(null);
         } catch (e: any) {
             const err = e instanceof Error ? e : new Error(String(e));

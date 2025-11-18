@@ -32,7 +32,9 @@ import {
 
 // === Quick toggles ==========================================================
 const USE_DEMO = false; // ← false：连接你的后端
-const BASE_URL = "/"; // e.g. "http://localhost:8080" (no trailing slash)
+const CURRENT_ORIGIN =
+    typeof window !== "undefined" && window.location ? window.location.origin : "";
+const BASE_URL = CURRENT_ORIGIN || "/"; // e.g. "http://localhost:8080" (no trailing slash)
 const NDJSON_PATH = "/ai/v3/chat/step/ndjson"; // your NDJSON endpoint
 const STORAGE_KEY = "javelin.chat.v3";
 const UNTITLED = "新会话";
@@ -1147,81 +1149,89 @@ export default function JavelinMinimalChat() {
                                 </div>
                             )}
                             <div className="space-y-1">
-                                {filtered.map((c) => (
-                                    <button
-                                        key={c.id}
-                                        onClick={() => {
-                                            setActiveId(c.id);
-                                            setEvents([]);
-                                            setInput("");
-                                        }}
-                                        className={`w-full rounded-2xl border px-3 py-2 text-left text-sm transition hover:bg-slate-100 ${
-                                            c.id === activeId
-                                                ? "border-slate-900 bg-slate-900 text-white"
-                                                : "border-transparent bg-transparent"
-                                        }`}
-                                    >
-                                        <div className="flex items-center gap-2">
-                                            <div className="flex-1 min-w-0 truncate text-xs font-medium">
-                                                {c.title || UNTITLED}
+                                {filtered.map((c) => {
+                                    const isActive = c.id === activeId;
+                                    return (
+                                        <div
+                                            key={c.id}
+                                            role="button"
+                                            tabIndex={0}
+                                            onClick={() => {
+                                                setActiveId(c.id);
+                                                setEvents([]);
+                                                setInput("");
+                                            }}
+                                            onKeyDown={(e) => {
+                                                if (e.key === "Enter" || e.key === " ") {
+                                                    e.preventDefault();
+                                                    setActiveId(c.id);
+                                                    setEvents([]);
+                                                    setInput("");
+                                                }
+                                            }}
+                                            className={`w-full rounded-2xl border px-3 py-2 text-left text-sm transition hover:bg-slate-100 ${
+                                                isActive
+                                                    ? "border-slate-900 bg-slate-900 text-white"
+                                                    : "border-transparent bg-transparent"
+                                            }`}
+                                        >
+                                            <div className="flex items-center gap-2">
+                                                <div className="flex-1 min-w-0 truncate text-xs font-medium">
+                                                    {c.title || UNTITLED}
+                                                </div>
+                                                <div className="flex items-center gap-1 text-[10px] text-slate-400">
+                                                    <button
+                                                        type="button"
+                                                        onPointerDown={(e) => {
+                                                            e.preventDefault();
+                                                            e.stopPropagation();
+                                                        }}
+                                                        onMouseDown={(e) => {
+                                                            e.preventDefault();
+                                                            e.stopPropagation();
+                                                        }}
+                                                        onClick={(e) => {
+                                                            e.preventDefault();
+                                                            e.stopPropagation();
+                                                            requestRename(c.id);
+                                                        }}
+                                                        className={`rounded p-0.5 ${
+                                                            isActive ? "hover:bg白/20" : "hover:bg-slate-100"
+                                                        }`}
+                                                        title="重命名"
+                                                    >
+                                                        <Pencil className="h-3 w-3" />
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        onPointerDown={(e) => {
+                                                            e.preventDefault();
+                                                            e.stopPropagation();
+                                                        }}
+                                                        onMouseDown={(e) => {
+                                                            e.preventDefault();
+                                                            e.stopPropagation();
+                                                        }}
+                                                        onClick={(e) => {
+                                                            e.preventDefault();
+                                                            e.stopPropagation();
+                                                            requestDelete(c.id);
+                                                        }}
+                                                        className={`rounded p-0.5 ${
+                                                            isActive ? "hover:bg白/20" : "hover:bg-slate-100"
+                                                        }`}
+                                                        title="删除"
+                                                    >
+                                                        <Trash2 className="h-3 w-3" />
+                                                    </button>
+                                                </div>
                                             </div>
-                                            <div className="flex items-center gap-1 text-[10px] text-slate-400">
-                                                <button
-                                                    type="button"
-                                                    onPointerDown={(e) => {
-                                                        e.preventDefault();
-                                                        e.stopPropagation();
-                                                    }}
-                                                    onMouseDown={(e) => {
-                                                        e.preventDefault();
-                                                        e.stopPropagation();
-                                                    }}
-                                                    onClick={(e) => {
-                                                        e.preventDefault();
-                                                        e.stopPropagation();
-                                                        requestRename(c.id);
-                                                    }}
-                                                    className={`rounded p-0.5 ${
-                                                        c.id === activeId
-                                                            ? "hover:bg-white/20"
-                                                            : "hover:bg-slate-100"
-                                                    }`}
-                                                    title="重命名"
-                                                >
-                                                    <Pencil className="h-3 w-3" />
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    onPointerDown={(e) => {
-                                                        e.preventDefault();
-                                                        e.stopPropagation();
-                                                    }}
-                                                    onMouseDown={(e) => {
-                                                        e.preventDefault();
-                                                        e.stopPropagation();
-                                                    }}
-                                                    onClick={(e) => {
-                                                        e.preventDefault();
-                                                        e.stopPropagation();
-                                                        requestDelete(c.id);
-                                                    }}
-                                                    className={`rounded p-0.5 ${
-                                                        c.id === activeId
-                                                            ? "hover:bg-white/20"
-                                                            : "hover:bg-slate-100"
-                                                    }`}
-                                                    title="删除"
-                                                >
-                                                    <Trash2 className="h-3 w-3" />
-                                                </button>
+                                            <div className="mt-0.5 text-[11px] text-slate-500 line-clamp-2">
+                                                {convMessages[c.id]?.[convMessages[c.id].length - 1]?.content ?? "(空)"}
                                             </div>
                                         </div>
-                                        <div className="mt-0.5 text-[11px] text-slate-500 line-clamp-2">
-                                            {convMessages[c.id]?.[convMessages[c.id].length - 1]?.content ??
-                                                "(空)"}
-                                        </div>
-                                    </button>
-                                ))}
+                                    );
+                                })}
                             </div>
                         </div>
 

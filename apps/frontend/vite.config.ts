@@ -6,7 +6,10 @@ export default defineConfig({
     server: {
         host: true,
         port: 5174,
-        allowedHosts: ['frp-bus.com'],
+        allowedHosts: [
+            'frp-bus.com',
+            'javelinai.cloud'
+        ],
         proxy: {
             '/ai': {target: 'http://localhost:8080', changeOrigin: true},
             '/files': {target: 'http://localhost:8080', changeOrigin: true},

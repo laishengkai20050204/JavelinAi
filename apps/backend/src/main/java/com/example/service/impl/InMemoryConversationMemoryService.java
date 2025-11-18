@@ -1,12 +1,15 @@
 package com.example.service.impl;
 
 import com.example.service.ConversationMemoryService;
+import com.example.service.dto.ConversationSummary;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
 import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -28,6 +31,28 @@ public class InMemoryConversationMemoryService implements ConversationMemoryServ
     private static final String STATE_FINAL = "FINAL";
 
     private final Map<String, Map<String, Map<MessageKey, StoredMessage>>> conversations = new ConcurrentHashMap<>();
+
+    @Override
+    public List<ConversationSummary> listConversationSummaries() {
+        List<ConversationSummary> summaries = new ArrayList<>();
+        conversations.forEach((userId, perUser) -> summaries.addAll(buildSummariesForUser(userId, perUser)));
+        sortSummariesByLastMessage(summaries);
+        return summaries;
+    }
+
+    @Override
+    public List<ConversationSummary> listConversationSummaries(String userId) {
+        if (!StringUtils.hasText(userId)) {
+            return listConversationSummaries();
+        }
+        Map<String, Map<MessageKey, StoredMessage>> perUser = conversations.get(userId);
+        if (perUser == null) {
+            return List.of();
+        }
+        List<ConversationSummary> summaries = buildSummariesForUser(userId, perUser);
+        sortSummariesByLastMessage(summaries);
+        return summaries;
+    }
 
     @Override
     public List<Map<String, Object>> getHistory(String userId, String conversationId) {
@@ -410,6 +435,47 @@ public class InMemoryConversationMemoryService implements ConversationMemoryServ
     @Override
     public Map<String, Object> findMessageById(long id) {
         return Map.of();
+    }
+
+    private List<ConversationSummary> buildSummariesForUser(String userId,
+                                                            Map<String, Map<MessageKey, StoredMessage>> perUser) {
+        List<ConversationSummary> summaries = new ArrayList<>();
+        perUser.forEach((conversationId, bucket) -> {
+            ConversationSummary summary = summarizeConversation(userId, conversationId, bucket);
+            if (summary != null) {
+                summaries.add(summary);
+            }
+        });
+        return summaries;
+    }
+
+    private ConversationSummary summarizeConversation(String userId,
+                                                      String conversationId,
+                                                      Map<MessageKey, StoredMessage> bucket) {
+        long messageCount = 0;
+        Instant latest = null;
+        for (StoredMessage stored : bucket.values()) {
+            if (!STATE_FINAL.equals(stored.getState())) {
+                continue;
+            }
+            messageCount++;
+            Instant createdAt = stored.getCreatedAt();
+            if (createdAt != null && (latest == null || createdAt.isAfter(latest))) {
+                latest = createdAt;
+            }
+        }
+        if (messageCount == 0) {
+            return null;
+        }
+        LocalDateTime lastMessageAt = latest == null ? null : LocalDateTime.ofInstant(latest, ZoneOffset.UTC);
+        return new ConversationSummary(userId, conversationId, messageCount, lastMessageAt);
+    }
+
+    private void sortSummariesByLastMessage(List<ConversationSummary> summaries) {
+        summaries.sort(Comparator.comparing(
+                ConversationSummary::lastMessageAt,
+                Comparator.nullsLast(Comparator.reverseOrder())
+        ));
     }
 
 }

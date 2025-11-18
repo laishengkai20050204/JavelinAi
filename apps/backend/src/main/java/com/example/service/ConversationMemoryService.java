@@ -1,9 +1,15 @@
 package com.example.service;
 
+import com.example.service.dto.ConversationSummary;
+
 import java.util.List;
 import java.util.Map;
 
 public interface ConversationMemoryService {
+
+    List<ConversationSummary> listConversationSummaries();
+
+    List<ConversationSummary> listConversationSummaries(String userId);
 
     List<Map<String, Object>> getHistory(String userId, String conversationId);
 

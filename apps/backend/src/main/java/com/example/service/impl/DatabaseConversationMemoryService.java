@@ -2,9 +2,10 @@ package com.example.service.impl;
 
 import com.example.audit.AuditChainService;
 import com.example.audit.AuditHasher;
-import com.example.service.ConversationMemoryService;
-import com.example.service.impl.entity.ConversationMessageEntity;
 import com.example.mapper.ConversationMemoryMapper;
+import com.example.service.ConversationMemoryService;
+import com.example.service.dto.ConversationSummary;
+import com.example.service.impl.entity.ConversationMessageEntity;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
@@ -38,6 +39,19 @@ public class DatabaseConversationMemoryService implements ConversationMemoryServ
     private final ConversationMemoryMapper mapper;
     private final ObjectMapper objectMapper;
     private final AuditChainService auditChainService;
+
+    @Override
+    public List<ConversationSummary> listConversationSummaries() {
+        return mapper.listConversationSummaries(null);
+    }
+
+    @Override
+    public List<ConversationSummary> listConversationSummaries(String userId) {
+        if (!StringUtils.hasText(userId)) {
+            return listConversationSummaries();
+        }
+        return mapper.listConversationSummaries(userId.trim());
+    }
 
     @Override
     public List<Map<String, Object>> getHistory(String userId, String conversationId) {

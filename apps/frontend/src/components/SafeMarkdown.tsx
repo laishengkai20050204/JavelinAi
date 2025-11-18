@@ -7,6 +7,10 @@ import remarkBreaks from "remark-breaks";
 import type { PluggableList } from "unified";
 import rehypeHighlight from "rehype-highlight";
 import rehypeRaw from "rehype-raw";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
+import "katex/dist/katex.min.css";
+
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 
 export interface SafeMarkdownProps {
@@ -60,8 +64,7 @@ function rewriteInternalUrl(url: string): string {
     }
 }
 
-
-/** 基于默认 schema 的最小扩展：允许代码高亮 class（language-xxx / hljs） */
+/** 基于默认 schema 的最小扩展：允许代码高亮 class（language-xxx / hljs）+ KaTeX class */
 const sanitizeSchema = {
     ...defaultSchema,
     attributes: {
@@ -77,6 +80,7 @@ const sanitizeSchema = {
         span: [
             ...(defaultSchema.attributes?.span || []),
             ["className", /^hljs.*$/],
+            ["className", /^katex.*$/], // 允许 KaTeX 的 class
         ],
     },
 };
@@ -100,7 +104,6 @@ type ImgProps = React.DetailedHTMLProps<
     HTMLImageElement
 >;
 
-
 export default function SafeMarkdown({
                                          source,
                                          allowHtml = false,
@@ -111,29 +114,58 @@ export default function SafeMarkdown({
     // 仅做最小预处理：换行归一
     const md = React.useMemo(() => normalize(source), [source]);
 
+    // remark 插件：GFM + 自动换行 + 数学公式
+    const remarkPlugins: PluggableList = [remarkGfm, remarkBreaks, remarkMath];
+
+    // rehype 插件
     const rehypePlugins: PluggableList = [];
-    if (highlight) rehypePlugins.push(rehypeHighlight);
+
+    // 只在允许 HTML 的时候解析 & 清洗 HTML
     if (allowHtml) {
-        rehypePlugins.push(rehypeRaw); // 先 raw 再 sanitize
-        rehypePlugins.push([rehypeSanitize, sanitizeSchema]);
-    } else {
+        // 1) 把 Markdown 里的 raw HTML 解析成节点
+        rehypePlugins.push(rehypeRaw);
+        // 2) 对这些 HTML 节点做安全过滤
         rehypePlugins.push([rehypeSanitize, sanitizeSchema]);
     }
 
+    // 代码高亮（只处理 <code>，相对安全）
+    if (highlight) {
+        rehypePlugins.push(rehypeHighlight);
+    }
+
+    // 数学公式渲染（remark-math 产生的 math 节点 -> KaTeX）
+    rehypePlugins.push(rehypeKatex);
+
+    // 工具函数：判断是不是图片链接
+    function isImageUrl(url: string): boolean {
+        return /\.(png|jpe?g|gif|webp|svg)(\?.*)?$/i.test(url);
+    }
+
     const components: Components = {
-        // 新增：统一处理链接 href
+        // 统一处理链接 href
         a({ href, children, ...props }: LinkProps) {
             const raw = typeof href === "string" ? href : "";
             const safeHref = raw ? rewriteInternalUrl(raw) : raw;
 
+            // 把 children 拿出来，看是不是真的“只有一个文本节点”
+            const childrenArray = React.Children.toArray(children);
+            const isSingleTextChild =
+                childrenArray.length === 1 &&
+                typeof childrenArray[0] === "string" &&
+                childrenArray[0].trim() === raw.trim();
+
+            // ✅ 如果 href 是图片地址，并且 label 就是原始 URL，
+            //    那我们直接当成 <img> 来渲染
+            if (safeHref && isSingleTextChild && isImageUrl(safeHref)) {
+                return <img src={safeHref} alt="" />;
+            }
+
+            // 否则按普通链接处理
             let label: React.ReactNode = children;
 
-            if (raw && safeHref && React.Children.count(children) === 1) {
-                const only = React.Children.toArray(children)[0];
-                if (typeof only === "string" && only.trim() === raw.trim()) {
-                    // 如果显示文字本来就是原始 url，就一起替换成重写后的
-                    label = safeHref;
-                }
+            if (raw && safeHref && isSingleTextChild) {
+                // 如果显示文字本来就是原始 url，就一起替换成重写后的
+                label = safeHref;
             }
 
             return (
@@ -143,7 +175,7 @@ export default function SafeMarkdown({
             );
         },
 
-        // 新增：统一处理图片 src
+        // 统一处理图片 src
         img({ src, ...props }: ImgProps) {
             const raw = typeof src === "string" ? src : "";
             const safeSrc = raw ? rewriteInternalUrl(raw) : raw;
@@ -151,7 +183,7 @@ export default function SafeMarkdown({
             return <img src={safeSrc} {...props} />;
         },
 
-        // 原来的 code 渲染保持不变
+        // code 渲染保持原来的逻辑
         code({ inline, className, children, ...props }: CodeProps) {
             const hasSyntax =
                 /\blanguage-/.test(className || "") || /\bhljs\b/.test(className || "");
@@ -161,7 +193,12 @@ export default function SafeMarkdown({
                 const fallback =
                     "bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-100";
                 return (
-                    <code className={`${base} ${hasSyntax ? "" : fallback} ${className || ""}`} {...props}>
+                    <code
+                        className={`${base} ${hasSyntax ? "" : fallback} ${
+                            className || ""
+                        }`}
+                        {...props}
+                    >
                         {children}
                     </code>
                 );
@@ -170,16 +207,16 @@ export default function SafeMarkdown({
             if (hasSyntax) {
                 return (
                     <pre className="rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm overflow-auto p-3">
-                    <code className={className} {...props}>
-                        {children}
-                    </code>
-                </pre>
+                        <code className={className} {...props}>
+                            {children}
+                        </code>
+                    </pre>
                 );
             }
             return (
                 <pre className="rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-slate-100 p-3 shadow-sm overflow-auto whitespace-pre-wrap break-words">
-                <code className="font-mono">{children}</code>
-            </pre>
+                    <code className="font-mono">{children}</code>
+                </pre>
             );
         },
     };
@@ -194,7 +231,7 @@ export default function SafeMarkdown({
     return (
         <div className={wrapperClass}>
             <ReactMarkdown
-                remarkPlugins={[remarkGfm, remarkBreaks]}
+                remarkPlugins={remarkPlugins}
                 rehypePlugins={rehypePlugins}
                 components={components}
             >
@@ -203,5 +240,3 @@ export default function SafeMarkdown({
         </div>
     );
 }
-
-
