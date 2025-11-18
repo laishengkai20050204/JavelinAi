@@ -136,6 +136,7 @@ public class PlanTaskTool implements AiTool {
     }
 
     @Override
+    @SuppressWarnings("unchecked")
     public ToolResult execute(Map<String, Object> args) {
         Map<String, Object> plan = new LinkedHashMap<>();
         if (args != null) {
@@ -149,12 +150,93 @@ public class PlanTaskTool implements AiTool {
         String summary = "已生成结构化计划：goal=" + goal + "，steps=" + stepCount + " 个步骤。";
         log.debug("[plan_task] {}", summary);
 
+        // ===== 可读文本：把所有步骤都展开给 LLM 看 =====
+        StringBuilder sb = new StringBuilder();
+
+        sb.append("【plan_task 全局任务规划】\n");
+        sb.append("总体目标：").append(goal).append("\n");
+
+        Object priority = plan.get("priority");
+        if (priority != null) {
+            sb.append("任务优先级：").append(priority).append("\n");
+        }
+
+        Object finalFormat = plan.get("final_answer_format");
+        if (finalFormat != null) {
+            sb.append("最终回答形式（final_answer_format）：")
+                    .append(finalFormat)
+                    .append("\n");
+        }
+
+        Object context = plan.get("context");
+        if (context != null && !Objects.toString(context, "").isBlank()) {
+            sb.append("背景信息（context）：").append(context).append("\n");
+        }
+
+        sb.append("\n步骤列表（共 ").append(stepCount).append(" 步）：\n");
+
+        if (stepsObj instanceof List<?>) {
+            List<?> steps = (List<?>) stepsObj;
+            for (Object o : steps) {
+                if (!(o instanceof Map)) {
+                    continue;
+                }
+                Map<String, Object> step = (Map<String, Object>) o;
+
+                String id = Objects.toString(step.getOrDefault("id", "（无ID）"));
+                String kind = Objects.toString(step.getOrDefault("kind", "unknown"));
+                String desc = Objects.toString(step.getOrDefault("description", "（无描述）"));
+
+                sb.append("- [").append(id).append("] kind=")
+                        .append(kind).append(" ：")
+                        .append(desc).append("\n");
+
+                Object dependsOn = step.get("depends_on");
+                if (dependsOn instanceof List<?> deps && !deps.isEmpty()) {
+                    sb.append("  · depends_on: ").append(deps).append("\n");
+                }
+
+                Object toolName = step.get("tool_name");
+                if (toolName != null) {
+                    sb.append("  · tool_name: ").append(toolName).append("\n");
+                }
+
+                Object toolArgsHint = step.get("tool_args_hint");
+                if (toolArgsHint != null && !Objects.toString(toolArgsHint, "").isBlank()) {
+                    sb.append("  · tool_args_hint: ")
+                            .append(toolArgsHint)
+                            .append("\n");
+                }
+
+                Object expectedOutput = step.get("expected_output");
+                if (expectedOutput != null && !Objects.toString(expectedOutput, "").isBlank()) {
+                    sb.append("  · expected_output: ")
+                            .append(expectedOutput)
+                            .append("\n");
+                }
+
+                Object visionPrompt = step.get("vision_prompt");
+                if (visionPrompt != null && !Objects.toString(visionPrompt, "").isBlank()) {
+                    sb.append("  · vision_prompt: ")
+                            .append(visionPrompt)
+                            .append("\n");
+                }
+            }
+        } else {
+            sb.append("（steps 字段缺失或不是数组）\n");
+        }
+
+        // 也可以在最后附一行简单摘要，方便人类阅读
+        sb.append("\n小结：").append(summary);
+
         Map<String, Object> data = new LinkedHashMap<>();
-        data.put("plan", plan);
-        data.put("summary", summary);
-        data.put("text", summary); // 方便 AiToolExecutor 直接拿来当工具消息内容
+        data.put("plan", plan);       // 原始结构化 JSON 仍然完整保留
+        data.put("summary", summary); // 简短摘要
+        data.put("text", sb.toString()); // 可读内容：包含所有步骤，供 LLM/Mem 使用
         data.put("_source", "plan_task");
 
         return ToolResult.success(null, name(), false, data);
     }
+
+
 }

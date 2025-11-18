@@ -52,15 +52,18 @@ public class ConversationHistoryController {
 
     @Operation(summary = "按 userId/convId 查询历史消息，支持 limit")
     @GetMapping(value = "/conversations/{userId}/{conversationId}", produces = MediaType.APPLICATION_JSON_VALUE)
-    public List<Map<String, Object>> getConversationMessages(@PathVariable("userId") String userId,
-                                                             @PathVariable("conversationId") String conversationId,
-                                                             @RequestParam(value = "limit", required = false) Integer limit) {
+    public List<HistoryMessage> getConversationMessages(@PathVariable("userId") String userId,
+                                                        @PathVariable("conversationId") String conversationId,
+                                                        @RequestParam(value = "limit", required = false) Integer limit) {
         int sanitized = limit == null ? DEFAULT_LIMIT : limit;
+        List<Map<String, Object>> messages;
         if (sanitized <= 0) {
-            return memoryService.getHistory(userId, conversationId);
+            messages = memoryService.getHistory(userId, conversationId);
+        } else {
+            int bounded = Math.min(sanitized, MAX_LIMIT);
+            messages = memoryService.getContext(userId, conversationId, bounded);
         }
-        int bounded = Math.min(sanitized, MAX_LIMIT);
-        return memoryService.getContext(userId, conversationId, bounded);
+        return toHistoryMessages(messages);
     }
 
     private List<UserConversationIndex> groupByUser(List<ConversationSummary> summaries) {
@@ -77,8 +80,33 @@ public class ConversationHistoryController {
         return response;
     }
 
+    private List<HistoryMessage> toHistoryMessages(List<Map<String, Object>> messages) {
+        if (messages == null || messages.isEmpty()) {
+            return List.of();
+        }
+        List<HistoryMessage> result = new ArrayList<>(messages.size());
+        for (Map<String, Object> message : messages) {
+            if (message == null) {
+                continue;
+            }
+            Object content = message.get("content");
+            if (content == null) {
+                continue;
+            }
+            String text = String.valueOf(content);
+            if (!StringUtils.hasText(text)) {
+                continue;
+            }
+            Object roleObj = message.get("role");
+            String role = roleObj instanceof String r && StringUtils.hasText(r) ? r : "assistant";
+            result.add(new HistoryMessage(role, text));
+        }
+        return result;
+    }
+
     public record UserConversationIndex(String userId, List<ConversationMeta> conversations) { }
 
     public record ConversationMeta(String conversationId, long messageCount, LocalDateTime lastMessageAt) { }
-}
 
+    public record HistoryMessage(String role, String content) { }
+}
