@@ -46,6 +46,11 @@ public class SpringAiChatGateway {
     private static final TypeReference<List<Map<String, Object>>> MESSAGE_LIST_TYPE = new TypeReference<>() {};
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {};
 
+
+    private static final int MAX_LOG_CONTENT_CHARS = 2000;
+    private static final int MAX_LOG_TOOL_DESC_CHARS = 256;
+
+
     private final ChatModel chatModel;
     private final SpringAiToolAdapter toolAdapter;
     private final ObjectMapper mapper;
@@ -246,18 +251,61 @@ public class SpringAiChatGateway {
     }
 
 
-    // 将即将发送给模型的请求以“OpenAI风格”JSON预览形式打印到日志（DEBUG级）
     private ObjectNode logOutgoingPayloadJson(
             Prompt prompt, Map<String, Object> originalPayload, AiProperties.Mode mode) {
 
-        if (!log.isDebugEnabled()) return mapper.createObjectNode();
+        if (!log.isDebugEnabled()) {
+            // 即便不是 DEBUG，也返回一个“截断版”给 logHttpError 使用，避免 4xx 日志爆炸
+            ObjectNode full = buildOutgoingPayloadPreview(prompt, originalPayload, mode);
+            return truncatePreviewForLogging(full);
+        }
 
-        ObjectNode preview = buildOutgoingPayloadPreview(prompt, originalPayload, mode); // �?把你现有方法体抽出来
+        ObjectNode fullPreview = buildOutgoingPayloadPreview(prompt, originalPayload, mode);
+        ObjectNode truncated = truncatePreviewForLogging(fullPreview);
+
         try {
-            log.debug("[AI-REQ] {}", mapper.writerWithDefaultPrettyPrinter().writeValueAsString(preview));
+            log.debug("[AI-REQ] {}", mapper
+                    .writerWithDefaultPrettyPrinter()
+                    .writeValueAsString(truncated));
         } catch (Exception ignore) {}
 
-        return preview;
+        // 返回截断后的版本，logHttpError 里也会用这个（不会再把 8w 字符打出来）
+        return truncated;
+    }
+
+    @Nullable
+    private AssistantMessage safeGetAssistantMessage(ChatResponse response) {
+        if (response == null) return null;
+
+        Generation gen = response.getResult();
+
+        // 有些 provider / Spring AI 实现里，stream 的某些 chunk 可能 result 为 null，
+        // 但 results 列表里还有东西，这里兜一下
+        if (gen == null) {
+            List<Generation> gens = response.getResults();
+            if (gens != null) {
+                for (Generation g : gens) {
+                    if (g != null && g.getOutput() instanceof AssistantMessage) {
+                        gen = g;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (gen == null) return null;
+
+        Message output = gen.getOutput();
+        if (output instanceof AssistantMessage am) {
+            return am;
+        }
+
+        // output 不是 AssistantMessage（比如某些自定义实现），也不要 NPE，打个日志即可
+        if (log.isWarnEnabled()) {
+            log.warn("[AI-STREAM] generation output is not AssistantMessage: {}",
+                    (output != null ? output.getClass() : "null"));
+        }
+        return null;
     }
 
     private ObjectNode buildOutgoingPayloadPreview(
@@ -688,14 +736,15 @@ public class SpringAiChatGateway {
     }
 
     private String formatResponse(ChatResponse response, AiProperties.Mode mode) {
-        Generation generation = response.getResult();
-        AssistantMessage message = generation.getOutput();
-        String content = message != null ? message.getContent() : "";
+        AssistantMessage message = safeGetAssistantMessage(response);
+        String content = (message != null && message.getContent() != null)
+                ? message.getContent()
+                : "";
 
         ObjectNode root = mapper.createObjectNode();
         ObjectNode messageNode = root.putObject("message");
         messageNode.put("role", MessageType.ASSISTANT.toString().toLowerCase(Locale.ROOT));
-        messageNode.put("content", content != null ? content : "");
+        messageNode.put("content", content);
         messageNode.put("thinking", "");
 
         ArrayNode choices = root.putArray("choices");
@@ -703,7 +752,7 @@ public class SpringAiChatGateway {
         choice.put("index", 0);
         ObjectNode choiceMessage = choice.putObject("message");
         choiceMessage.put("role", "assistant");
-        choiceMessage.put("content", content != null ? content : "");
+        choiceMessage.put("content", content);
 
         if (message != null && message.hasToolCalls()) {
             ArrayNode toolCallsNode = choiceMessage.putArray("tool_calls");
@@ -719,7 +768,6 @@ public class SpringAiChatGateway {
 
         choice.put("finish_reason", "stop");
 
-        // 👇 可选：�?provider 原始信息塞进返回，方便前�?你直接看到“原生�?
         if (properties.getDebug() != null && properties.getDebug().isIncludeRawInGatewayJson()) {
             Map<String, Object> raw = extractProviderRaw(response);
             if (!raw.isEmpty()) {
@@ -733,29 +781,41 @@ public class SpringAiChatGateway {
     }
 
 
+
     private String formatStreamChunk(ChatResponse response, AiProperties.Mode mode) {
-        Generation generation = response.getResult();
-        AssistantMessage message = generation.getOutput();
         ObjectNode root = mapper.createObjectNode();
         ArrayNode choices = root.putArray("choices");
         ObjectNode choice = choices.addObject();
         ObjectNode delta = choice.putObject("delta");
 
-        if (message != null) {
-            String content = message.getContent();
-            if (content != null && !content.isEmpty()) delta.put("content", content);
-            if (message.hasToolCalls()) {
-                ArrayNode toolCalls = delta.putArray("tool_calls");
-                for (AssistantMessage.ToolCall call : message.getToolCalls()) {
-                    ObjectNode toolCallNode = toolCalls.addObject();
-                    toolCallNode.put("id", call.id());
-                    toolCallNode.put("type", call.type());
-                    ObjectNode fnNode = toolCallNode.putObject("function");
-                    fnNode.put("name", call.name());
-                    fnNode.put("arguments", call.arguments());
-                }
+        // 安全地拿 AssistantMessage
+        AssistantMessage message = safeGetAssistantMessage(response);
+        if (message == null) {
+            // 某些流式 chunk 可能没有内容，比如 keep-alive / control frame，直接给一个空 delta 即可
+            if (log.isTraceEnabled()) {
+                log.trace("[AI-STREAM] chunk without assistant message: {}", response);
+            }
+            choice.put("index", 0);
+            return root.toString();
+        }
+
+        String content = message.getContent();
+        if (content != null && !content.isEmpty()) {
+            delta.put("content", content);
+        }
+
+        if (message.hasToolCalls()) {
+            ArrayNode toolCalls = delta.putArray("tool_calls");
+            for (AssistantMessage.ToolCall call : message.getToolCalls()) {
+                ObjectNode toolCallNode = toolCalls.addObject();
+                toolCallNode.put("id", call.id());
+                toolCallNode.put("type", call.type());
+                ObjectNode fnNode = toolCallNode.putObject("function");
+                fnNode.put("name", call.name());
+                fnNode.put("arguments", call.arguments());
             }
         }
+
         choice.put("index", 0);
         return root.toString();
     }
@@ -780,6 +840,61 @@ public class SpringAiChatGateway {
         }
         return content.toString();
     }
+
+    private String truncateForLog(String text, int limit) {
+        if (text == null) return null;
+        if (text.length() <= limit) return text + " (len=" + text.length() + ")";
+        String prefix = text.substring(0, limit);
+        return prefix + "... (len=" + text.length() + ")";
+    }
+
+    /**
+     * 仅用于日志输出的预览截断：
+     * - messages[*].content 按 MAX_LOG_CONTENT_CHARS 截断
+     * - tools 仅输出工具名数组，不打印完整 parameters/schema/description
+     */
+    private ObjectNode truncatePreviewForLogging(ObjectNode full) {
+        if (full == null) {
+            return mapper.createObjectNode();
+        }
+        // 深拷贝一份，避免污染原对象
+        ObjectNode root = full.deepCopy();
+
+        // 1) 截断 messages 内容
+        JsonNode msgsNode = root.get("messages");
+        if (msgsNode instanceof ArrayNode msgs) {
+            for (JsonNode msgNode : msgs) {
+                if (msgNode instanceof ObjectNode msgObj) {
+                    JsonNode contentNode = msgObj.get("content");
+                    if (contentNode != null && contentNode.isTextual()) {
+                        String raw = contentNode.asText("");
+                        String truncated = truncateForLog(raw, MAX_LOG_CONTENT_CHARS);
+                        msgObj.put("content", truncated != null ? truncated : "");
+                    }
+                }
+            }
+        }
+
+        // 2) tools：只保留工具名
+        JsonNode toolsNode = root.get("tools");
+        if (toolsNode instanceof ArrayNode toolsArr) {
+            ArrayNode newTools = root.putArray("tools");
+            int count = 0;
+            for (JsonNode toolNode : toolsArr) {
+                if (!(toolNode instanceof ObjectNode tObj)) continue;
+                String name = tObj.path("function").path("name").asText("");
+                if (!name.isEmpty()) {
+                    // 只输出名称；你也可以改成对象结构：{ "name": "xxx" }
+                    newTools.add(name);
+                    count++;
+                }
+            }
+            root.put("_tools_count", count);
+        }
+
+        return root;
+    }
+
 
     @SuppressWarnings("unchecked")
     private Map<String, Object> castToMap(Object value) {
