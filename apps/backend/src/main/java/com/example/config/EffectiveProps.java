@@ -3,6 +3,7 @@ package com.example.config;
 import com.example.runtime.RuntimeConfig;
 import com.example.runtime.RuntimeConfigService;
 import lombok.RequiredArgsConstructor;
+import lombok.Setter;
 import org.springframework.stereotype.Component;
 import org.springframework.core.env.Environment;
 import org.springframework.util.StringUtils;
@@ -17,6 +18,13 @@ public class EffectiveProps {
     private final Environment env;
     public Boolean streamDecision() { return Boolean.TRUE.equals(this.streamDecisionFlag); }
     private Boolean streamDecisionFlag = true;
+
+    private ToolContextRenderMode toolContextRenderMode = ToolContextRenderMode.ALL_SUMMARY;
+
+    public ToolContextRenderMode toolContextRenderMode() {
+        return toolContextRenderMode;
+    }
+
 
     private RuntimeConfig rc() { return runtime.view(); }
 
