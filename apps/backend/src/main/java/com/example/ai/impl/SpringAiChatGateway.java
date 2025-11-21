@@ -363,7 +363,8 @@ public class SpringAiChatGateway implements ChatGateway {
                         .toList()
         );
         builder.toolNames(allowed);
-        builder.internalToolExecutionEnabled(Boolean.TRUE);
+        // 禁用 Spring AI 内置的工具执行，保留工具定义与上下文，由自有逻辑/前端代理执行
+        builder.internalToolExecutionEnabled(Boolean.FALSE);
         if (!allowed.isEmpty()) {
             builder.parallelToolCalls(Boolean.FALSE);
         }
@@ -1064,26 +1065,28 @@ public class SpringAiChatGateway implements ChatGateway {
             }
             String reqJson = "<unavailable>";
             try {
-                if (reqPreview != null && reqPreview.size() > 0) {
+                if (reqPreview != null && !reqPreview.isEmpty()) {
                     reqJson = mapper.writerWithDefaultPrettyPrinter()
                             .writeValueAsString(reqPreview);
                 }
             } catch (Exception ignored) {
             }
 
-            log.warn(
-                    "\n[PROVIDER-HTTP-ERROR]\n" +
-                            "�?status      : {}\n" +
-                            "�?url/message : {}\n" +
-                            "�?respHeaders : {}\n" +
-                            "�?respBody    : {}\n" +
-                            "�?reqPreview  : {}\n",
+            log.warn("""
+                    [PROVIDER-HTTP-ERROR]
+                      status      : {}
+                      url/message : {}
+                      respHeaders : {}
+                      respBody    : {}
+                      reqPreview  : {}
+                    """,
                     ex.getStatusCode().value(),
                     ex.getMessage(),
                     ex.getHeaders(),
                     (body == null || body.isBlank() ? "<empty>" : body),
                     reqJson
             );
+
         } else {
             log.warn("[PROVIDER-ERROR] {}", e.toString());
         }

@@ -248,9 +248,21 @@ public class PythonContainerPool {
     }
 
     /** 安装 pip 包（临时接回 bridge，完成后按策略断开） */
+    /** 安装 pip 包（先检查是否已安装，再决定是否实际 pip install；临时接回 bridge，完成后按策略断开） */
     public void ensurePip(String userId, Collection<String> pkgs, Duration timeout) {
         if (pkgs == null || pkgs.isEmpty()) return;
+
         UserContainer uc = ensureContainer(userId);
+
+        // 1) 先用 `pip show` 检查哪些包已经安装
+        List<String> toInstall = filterMissingPkgs(uc, pkgs, timeout);
+        if (toInstall.isEmpty()) {
+            log.debug("ensurePip: all packages already installed for user {}", userId);
+            touch(userId);
+            return;
+        }
+
+        // 2) 只有有缺失的包时才临时接回网络并 pip install
         boolean needReconnect = false;
         if (props.denyNetworkAfterSetup && uc.networkDisconnected()) {
             connectBridge(uc.name());
@@ -259,7 +271,7 @@ public class PythonContainerPool {
         List<String> cmd = new ArrayList<>();
         cmd.addAll(Arrays.asList("docker","exec", uc.name(),
                 "/ws/.venv/bin/python","-X","utf8","-m","pip","install","--no-cache-dir"));
-        cmd.addAll(pkgs);
+        cmd.addAll(toInstall);
         ExecResult r = runCapture(cmd, timeout);
         if (r.exitCode() != 0) throw new RuntimeException("pip install failed: " + r.stderr());
         if (needReconnect) {
@@ -268,6 +280,62 @@ public class PythonContainerPool {
         }
         touch(userId);
     }
+
+    /** 过滤掉已经安装的 pip 包，只返回需要安装的 spec 列表 */
+    private List<String> filterMissingPkgs(UserContainer uc, Collection<String> pkgs, Duration timeout) {
+        List<String> result = new ArrayList<>();
+        for (String spec : pkgs) {
+            if (spec == null || spec.isBlank()) continue;
+
+            String name = extractPipName(spec);
+            if (name == null || name.isBlank()) {
+                // 解析不出来就交给 pip 自己处理（宁可多装一次）
+                result.add(spec);
+                continue;
+            }
+
+            try {
+                // `pip show <name>` 不会访问网络，只查本地环境
+                List<String> cmd = new ArrayList<>();
+                cmd.addAll(Arrays.asList("docker","exec", uc.name(),
+                        "/ws/.venv/bin/python","-X","utf8","-m","pip","show", name));
+                ExecResult r = runCapture(cmd, timeout);
+                if (r.exitCode() != 0) {
+                    // 没有安装，需要后续 pip install
+                    result.add(spec);
+                } else {
+                    log.debug("pip package {} already installed in {}", spec, uc.name());
+                }
+            } catch (Exception e) {
+                // 检查失败时保守起见仍然让 pip 去安装
+                log.warn("pip show {} failed in {}, will install anyway", spec, uc.name(), e);
+                result.add(spec);
+            }
+        }
+        return result;
+    }
+
+    /** 从 requirement spec 中抽取包名，去掉版本号/比较符/extra 等 */
+    private static String extractPipName(String spec) {
+        if (spec == null) return null;
+        String s = spec.trim();
+        if (s.isEmpty()) return s;
+
+        int cut = s.length();
+        String seps = " <>=!~["; // 版本号 / extra / 比较符
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (Character.isWhitespace(c) || seps.indexOf(c) >= 0) {
+                cut = i;
+                break;
+            }
+        }
+        s = s.substring(0, cut);
+        if (s.startsWith("'") || s.startsWith("\"")) s = s.substring(1);
+        if (s.endsWith("'") || s.endsWith("\"")) s = s.substring(0, s.length() - 1);
+        return s;
+    }
+
 
     // ---- 内部工具 ----
     private void touch(String userId) {

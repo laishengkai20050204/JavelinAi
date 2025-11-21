@@ -79,7 +79,7 @@ ai:
     log-raw-response: true
     include-raw-in-gateway-json: true
   multi:
-    primary-model: glm-agent
+    primary-model: gpt-reasoner
     models:
       glm-agent:
         provider: glm-openai

@@ -3,6 +3,7 @@ package com.example.ai.tools.impl;
 import com.example.ai.tools.SpringAiToolAdapter;
 import com.example.ai.tools.ToolCallPlan;
 import com.example.ai.tools.ToolCallPlanFactory;
+import com.example.config.AiMultiModelProperties;
 import com.example.config.AiProperties;
 import com.example.config.EffectiveProps;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -19,10 +20,9 @@ import java.util.*;
 import java.util.stream.Collectors;
 
 /**
- * �?payload + EffectiveProps + SpringAiToolAdapter 统一转成 ToolCallPlan�?
- *
- * - 这里做完所有“工具选择”逻辑（tool_choice / tools / clientTools / toggles / tool_context）；
- * - 不再关心 Spring AI �?ToolCallingChatOptions�? */
+ * Build a tool-call plan from payload + runtime config + SpringAiToolAdapter (client-agnostic).
+ * Handles tool_choice/tool toggles/tool_context; leaves Spring AI specifics to the gateway.
+ */
 @Component
 @RequiredArgsConstructor
 public class SpringToolCallPlanFactoryImpl implements ToolCallPlanFactory {
@@ -30,19 +30,20 @@ public class SpringToolCallPlanFactoryImpl implements ToolCallPlanFactory {
     private final EffectiveProps effectiveProps;
     private final SpringAiToolAdapter toolAdapter;
     private final ObjectMapper mapper;
+    private final AiMultiModelProperties multiProps;
 
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {};
 
     @Override
     public ToolCallPlan buildPlan(Map<String, Object> payload, AiProperties.Mode mode) {
 
-        // 1) 模型名（请求优先，其�?runtime 配置�?
-        String modelFromPayload = coerceString(payload.get("model"));
-        String model = StringUtils.hasText(modelFromPayload)
-                ? modelFromPayload
+        // 1) Model: profile wins (ignore payload.model); fallback to runtime/static default
+        String profileName = profileFromPayload(payload);
+        String model = StringUtils.hasText(profileName)
+                ? multiProps.requireProfile(profileName).getModelId()
                 : effectiveProps.model();
 
-        // 2) 温度（可选）
+        // 2) Temperature (optional)
         Double temperature = null;
         Object tempObj = payload.get("temperature");
         if (tempObj instanceof Number n) {
@@ -61,12 +62,12 @@ public class SpringToolCallPlanFactoryImpl implements ToolCallPlanFactory {
         String normalizedToolChoice = normalizeToolChoice(rawToolChoice);
         String forcedFunction = forcedFunctionName(rawToolChoice);
 
-        // 4) 解析 tools + clientTools 定义
+        // 4) Parse tools + clientTools definitions
         Map<String, ToolCallPlan.ToolDef> mergedDefs = new LinkedHashMap<>();
         collectToolDefsFromPayload(payload.get("tools"), mergedDefs);
         collectToolDefsFromPayload(payload.get("clientTools"), mergedDefs);
 
-        // 5) 补上服务端注册的工具定义（若未被请求体覆盖）
+        // 5) Fill missing server-side tool definitions
         for (ToolCallback cb : toolAdapter.toolCallbacks()) {
             ToolDefinition definition = cb.getToolDefinition();
             if (definition == null) {
@@ -74,7 +75,7 @@ public class SpringToolCallPlanFactoryImpl implements ToolCallPlanFactory {
             }
             String name = definition.name();
             if (!StringUtils.hasText(name)) continue;
-            if (mergedDefs.containsKey(name)) continue; // 请求体优先覆盖描�?schema
+            if (mergedDefs.containsKey(name)) continue; // payload overrides schema/desc
             JsonNode schema = safeParseSchema(definition.inputSchema());
             String desc = definition.description();
             mergedDefs.put(name, new ToolCallPlan.ToolDef(
@@ -85,29 +86,27 @@ public class SpringToolCallPlanFactoryImpl implements ToolCallPlanFactory {
             ));
         }
 
-        // 6) 基础允许集合：所有工具名（请�?+ 服务端）
+        // 6) Allowed set (after payload + server merge)
         LinkedHashSet<String> allowed = mergedDefs.values().stream()
                 .map(ToolCallPlan.ToolDef::name)
                 .filter(StringUtils::hasText)
                 .collect(Collectors.toCollection(LinkedHashSet::new));
 
-        // 7) 应用 tool_choice 逻辑
+        // 7) Apply tool_choice
         if ("none".equals(normalizedToolChoice)) {
-            // 显式禁止工具
             allowed.clear();
         } else if (forcedFunction != null && StringUtils.hasText(forcedFunction)) {
-            // 强制单函�?
             allowed.clear();
             allowed.add(forcedFunction);
         }
 
-        // 8) 应用运行时开关（禁用的从 allowed 移除�?
+        // 8) Apply runtime toggles
         Map<String, Boolean> toggles = effectiveProps.toolToggles();
         if (toggles != null && !toggles.isEmpty()) {
             allowed.removeIf(name -> Boolean.FALSE.equals(toggles.get(name)));
         }
 
-        // 9) 最终暴露给模型的工具定义（enabled + allowed�?
+        // 9) Final tool definitions (enabled + allowed)
         List<ToolCallPlan.ToolDef> finalDefs = mergedDefs.values().stream()
                 .filter(def -> allowed.contains(def.name()))
                 .toList();
@@ -135,8 +134,23 @@ public class SpringToolCallPlanFactoryImpl implements ToolCallPlanFactory {
         );
     }
 
+    private String profileFromPayload(Map<String, Object> payload) {
+        String p = coerceString(payload.get("_profile"));
+        if (StringUtils.hasText(p)) return p;
+        p = coerceString(payload.get("profile"));
+        if (StringUtils.hasText(p)) return p;
+        p = coerceString(payload.get("modelProfile"));
+        if (StringUtils.hasText(p)) return p;
+        // 默认落到 primary-model（若未配置则返回 null）
+        String primary = multiProps.getPrimaryModel();
+        return StringUtils.hasText(primary) ? primary : null;
+    }
+
     // =============== helpers ===============
 
+    /**
+     * Collect tool definitions from request tools/clientTools into merged map.
+     */
     private void collectToolDefsFromPayload(Object toolsObj,
                                             Map<String, ToolCallPlan.ToolDef> merged) {
         if (!(toolsObj instanceof List<?> list)) return;
@@ -234,4 +248,3 @@ public class SpringToolCallPlanFactoryImpl implements ToolCallPlanFactory {
         return (s == null || s.isBlank()) ? null : s;
     }
 }
-

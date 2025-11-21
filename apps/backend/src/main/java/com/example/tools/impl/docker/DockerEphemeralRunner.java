@@ -56,18 +56,76 @@ public class DockerEphemeralRunner {
         if (r.exitCode() != 0) throw new RuntimeException("create venv failed: " + r.stderr());
     }
 
-
-    /** 安装 pip 包（联网） */
+    /** 安装 pip 包（联网，先检查是否已安装） */
     public void pipInstall(Path userRoot, Collection<String> pkgs) {
         if (pkgs == null || pkgs.isEmpty()) return;
+
+        // 1) 先过滤出“缺失的包”
+        List<String> toInstall = new ArrayList<>();
+        for (String spec : pkgs) {
+            if (spec == null || spec.isBlank()) continue;
+
+            String name = extractPipName(spec);
+            if (name == null || name.isBlank()) {
+                // 解析不了名字就交给 pip 自己处理
+                toInstall.add(spec);
+                continue;
+            }
+
+            try {
+                // 虽然 baseRun(false) 允许联网，但 pip show 其实不访问网络
+                List<String> cmd = baseRun(userRoot, false);
+                cmd.add(props.dockerImage);
+                cmd.add("/ws/.venv/bin/python"); cmd.add("-X"); cmd.add("utf8");
+                cmd.add("-m"); cmd.add("pip"); cmd.add("show"); cmd.add(name);
+
+                ExecResult r = runCapture(cmd, Duration.ofSeconds(10));
+                if (r.exitCode() != 0) {
+                    toInstall.add(spec);
+                } else {
+                    log.debug("pip package {} already installed in venv under {}", spec, userRoot);
+                }
+            } catch (Exception e) {
+                log.warn("pip show {} failed for {}, will install anyway", spec, userRoot, e);
+                toInstall.add(spec);
+            }
+        }
+
+        if (toInstall.isEmpty()) {
+            return; // 都已经装过了
+        }
+
+        // 2) 只对缺失的包执行 pip install
         List<String> cmd = baseRun(userRoot, false); // 允许联网
         cmd.add(props.dockerImage);
         cmd.add("/ws/.venv/bin/python"); cmd.add("-X"); cmd.add("utf8");
         cmd.add("-m"); cmd.add("pip"); cmd.add("install"); cmd.add("--no-cache-dir");
-        cmd.addAll(pkgs);
+        cmd.addAll(toInstall);
         ExecResult r = runCapture(cmd, Duration.ofMinutes(5));
         if (r.exitCode() != 0) throw new RuntimeException("pip install failed: " + r.stderr());
     }
+
+    /** 与上面保持同样逻辑，可以复制一份 */
+    private static String extractPipName(String spec) {
+        if (spec == null) return null;
+        String s = spec.trim();
+        if (s.isEmpty()) return s;
+
+        int cut = s.length();
+        String seps = " <>=!~[";
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (Character.isWhitespace(c) || seps.indexOf(c) >= 0) {
+                cut = i;
+                break;
+            }
+        }
+        s = s.substring(0, cut);
+        if (s.startsWith("'") || s.startsWith("\"")) s = s.substring(1);
+        if (s.endsWith("'") || s.endsWith("\"")) s = s.substring(0, s.length() - 1);
+        return s;
+    }
+
 
     /** 执行 python（可禁网） */
     public ExecResult execPython(Path userRoot, Path convDir, long timeoutMs) {
