@@ -12,7 +12,9 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.model.ToolContext;
-import org.springframework.ai.model.function.FunctionCallback;
+import org.springframework.ai.tool.ToolCallback;
+import org.springframework.ai.tool.definition.DefaultToolDefinition;
+import org.springframework.ai.tool.definition.ToolDefinition;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
@@ -44,20 +46,20 @@ public class SpringAiToolAdapter {
     private final ToolRegistry toolRegistry;
     private final ObjectMapper mapper;
 
-    public List<FunctionCallback> functionCallbacks() {
+    public List<ToolCallback> toolCallbacks() {
         return toolRegistry.allTools().stream()
                 .map(this::wrapTool)
                 .toList();
     }
 
-    private FunctionCallback wrapTool(AiTool tool) {
+    private ToolCallback wrapTool(AiTool tool) {
         if (tool instanceof FindRelevantMemoryTool memoryTool) {
             return buildFindRelevantMemoryCallback(memoryTool);
         }
         return new DelegatingCallback(tool);
     }
 
-    private FunctionCallback buildFindRelevantMemoryCallback(FindRelevantMemoryTool tool) {
+    private ToolCallback buildFindRelevantMemoryCallback(FindRelevantMemoryTool tool) {
         return new DelegatingCallback(tool) {
             @Override
             public String call(String argumentsJson, ToolContext context) {
@@ -83,28 +85,18 @@ public class SpringAiToolAdapter {
         };
     }
 
-    private class DelegatingCallback implements FunctionCallback {
+    private class DelegatingCallback implements ToolCallback {
         private final AiTool tool;
-        private final String schema;
+        private final ToolDefinition definition;
 
         private DelegatingCallback(AiTool tool) {
             this.tool = tool;
-            this.schema = toSchema(tool);
+            this.definition = buildDefinition(tool);
         }
 
         @Override
-        public String getName() {
-            return tool.name();
-        }
-
-        @Override
-        public String getDescription() {
-            return tool.description();
-        }
-
-        @Override
-        public String getInputTypeSchema() {
-            return schema;
+        public ToolDefinition getToolDefinition() {
+            return definition;
         }
 
         @Override
@@ -173,6 +165,14 @@ public class SpringAiToolAdapter {
         } catch (JsonProcessingException e) {
             throw new IllegalStateException("Failed to serialize tool schema for " + tool.name(), e);
         }
+    }
+
+    private ToolDefinition buildDefinition(AiTool tool) {
+        return DefaultToolDefinition.builder()
+                .name(tool.name())
+                .description(tool.description())
+                .inputSchema(toSchema(tool))
+                .build();
     }
 
     private String asString(Object value) {

@@ -1,6 +1,6 @@
 package com.example.infra;
 
-import com.example.ai.SpringAiChatGateway;
+import com.example.ai.impl.SpringAiChatGateway;
 import com.example.config.EffectiveProps;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;

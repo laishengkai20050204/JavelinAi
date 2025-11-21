@@ -1,12 +1,11 @@
 package com.example.service.impl;
 
-import com.example.ai.SpringAiChatGateway;
+import com.example.ai.impl.SpringAiChatGateway;
 import com.example.api.dto.AssembledContext;
 import com.example.api.dto.ToolResult;
 import com.example.config.EffectiveProps;
 import com.example.service.ConversationMemoryService;
 import com.example.service.ContinuationService;
-import com.example.util.ToolPayloads;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;

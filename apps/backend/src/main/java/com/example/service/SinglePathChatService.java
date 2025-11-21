@@ -441,9 +441,12 @@ public class SinglePathChatService {
 
 
     private Mono<StepTransition> continueAnswer(StepState st, AssembledContext ctx) {
+        // 本 step 要用的模型（优先 req.model）
+        String activeModelName  = resolveModelForStep(st);
+
         // 1) 准备最终续写的 payload（默认禁用工具，避免流中再起工具调用）
         Map<String, Object> payload = new LinkedHashMap<>();
-        payload.put("model", effectiveProps.model());   // ★ 加这一行
+        payload.put("model", activeModelName );   // ★ 加这一行
         payload.put("messages", ctx.modelMessages());
         payload.put("structuredToolMessages", ctx.structuredToolMessages());
         payload.put("_flattened", false);
@@ -469,6 +472,16 @@ public class SinglePathChatService {
                                 StepEvent.step(Map.of("type","assistant","text","[stream error] " + e.getMessage()))
                         ))
                 ));
+    }
+
+    private String resolveModelForStep(StepState st) {
+        if (st != null && st.req() != null) {
+            String fromReq = st.req().model();
+            if (org.springframework.util.StringUtils.hasText(fromReq)) {
+                return fromReq;
+            }
+        }
+        return effectiveProps.model();
     }
 
 

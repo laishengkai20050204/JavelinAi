@@ -74,7 +74,7 @@ class MinioStorageServiceIntegrationTest {
         Path localFile = tempDir.resolve("minio-real-upload.txt");
         Files.writeString(localFile, "真实 MinIO 上传测试 @" + Instant.now());
 
-        uploadedKey = storageService.buildObjectKey("integration", "upload", localFile.getFileName().toString());
+        uploadedKey = storageService.buildPythonOutputKey("integration", "upload", localFile.getFileName().toString());
         log.info("上传真实文件到 MinIO：bucket='{}', key='{}'", defaultBucket, uploadedKey);
 
         StepVerifier.create(storageService.uploadFile(defaultBucket, uploadedKey, localFile))

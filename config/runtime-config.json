@@ -1,14 +1,15 @@
 {
   "compatibility" : "OPENAI",
-  "model" : "gemini-3-pro-preview",
+  "model" : "glm-4.6",
   "toolsMaxLoops" : 100,
   "toolToggles" : {
     "debug_tool" : false,
     "get_server_time" : false,
-    "find_relevant_memory" : false
+    "find_relevant_memory" : false,
+    "gpt_agent_tool" : false
   },
-  "baseUrl" : "https://api.vveai.com",
-  "apiKey" : "sk-DAnQVbdc15SN0SFcC9B0A3Ea68Fd4eB9Ab8eD0F275A299Fe",
+  "baseUrl" : "https://dashscope.aliyuncs.com/compatible-mode",
+  "apiKey" : "sk-b977c46e3f5249bc86f6cdf499283585",
   "clientTimeoutMs" : 180000,
   "streamTimeoutMs" : 240000,
   "memoryMaxMessages" : 100

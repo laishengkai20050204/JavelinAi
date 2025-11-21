@@ -5,6 +5,7 @@ import java.util.Map;
 
 /** 最小请求 DTO；后续会逐步扩展，但本步只需要 q 就能跑 */
 public record ChatRequest(
+        String model,   // ← 新增，可选
         String userId,
         String conversationId,
         String resumeStepId,

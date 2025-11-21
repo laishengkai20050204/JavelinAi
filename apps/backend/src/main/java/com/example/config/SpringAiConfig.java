@@ -4,16 +4,12 @@ import com.example.ai.tools.SpringAiToolAdapter;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.model.ChatModel;
-import org.springframework.ai.model.function.FunctionCallback;
-
-
-
+import org.springframework.ai.tool.ToolCallback;
+import org.springframework.ai.tool.definition.ToolDefinition;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-
-import org.springframework.ai.model.function.FunctionCallingOptions;
 
 import java.util.Collections;
 import java.util.List;
@@ -45,16 +41,23 @@ public class SpringAiConfig {
     @Bean
     @ConditionalOnBean(ChatModel.class)
     public ChatClient chatClient(ChatModel chatModel) {
-        List<FunctionCallback> callbacks = toolAdapter != null
-                ? toolAdapter.functionCallbacks()
+        List<ToolCallback> callbacks = toolAdapter != null
+                ? toolAdapter.toolCallbacks()
                 : Collections.emptyList();
         if (!callbacks.isEmpty()) {
-            log.info("Function callbacks available: {}", callbacks.stream().map(FunctionCallback::getName).toList());
+            log.info("Tool callbacks available: {}", callbacks.stream()
+                    .map(this::toolName)
+                    .toList());
         } else {
-            log.info("No function callbacks registered; prompts will run without tool calling unless provided per request");
+            log.info("No tool callbacks registered; prompts will run without tool calling unless provided per request");
         }
         ChatClient.Builder builder = ChatClient.builder(chatModel);
 
         return builder.build();
+    }
+
+    private String toolName(ToolCallback callback) {
+        ToolDefinition def = callback.getToolDefinition();
+        return def != null && def.name() != null ? def.name() : "<unnamed>";
     }
 }
