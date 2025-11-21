@@ -2,13 +2,12 @@ package com.example.tools.impl;
 
 import com.example.ai.tools.AiToolComponent;
 import com.example.api.dto.ToolResult;
-import com.example.service.ConversationMemoryService;
 import com.example.config.EffectiveProps;
+import com.example.service.ConversationMemoryService;
 import com.example.tools.AiTool;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.stereotype.Component;
 
 import java.util.LinkedHashMap;
 import java.util.List;

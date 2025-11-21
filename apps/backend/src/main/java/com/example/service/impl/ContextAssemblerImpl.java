@@ -90,6 +90,8 @@ public class ContextAssemblerImpl implements ContextAssembler {
 - 不要把 LaTeX 公式写在 ``` 代码块 ``` 中，除非用户明确要求查看“原始 LaTeX”。
 
 【图片与链接】
+- 对于链接
+  - 对于Minio生成的链接，要完整输出，前端会自动转化为当前域名下的网址
 - 对于图片：
   - **绝不要**输出 base64 数据或 `data:` URL；
   - 不要在回复中包含长的 base64 字符串（例如 `data:image/png;base64,...`）。
@@ -98,7 +100,7 @@ public class ContextAssemblerImpl implements ContextAssembler {
   - 使用 Markdown 图片语法展示图片，例如：
     `![](https://example.com/image.png)` 或 `![描述](https://example.com/image.png)`，
     以便前端可以内联渲染。
-- 对于非图片链接，使用标准 Markdown 链接，例如：
+- 对于非图片链接，使用标准 Markdown ，例如：
   `[说明文字](https://example.com)`。
 
 【最终回答要求】

@@ -79,11 +79,11 @@ ai:
     log-raw-response: true
     include-raw-in-gateway-json: true
   multi:
-    primary-model: gpt-reasoner
+    primary-model: glm-agent
     models:
       glm-agent:
         provider: glm-openai
-        base-url: https://dashscope.aliyuncs.com
+        base-url: https://dashscope.aliyuncs.com/compatible-mode
         api-key: ${GLM_API_KEY}
         model-id: glm-4.6
         temperature: 0.3

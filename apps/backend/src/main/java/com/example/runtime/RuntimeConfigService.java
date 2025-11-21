@@ -27,13 +27,9 @@ public class RuntimeConfigService {
         }
 
         RuntimeConfig init = RuntimeConfig.builder()
-                .compatibility(null)
-                .model(props.getModel())
+                .profile(null)
                 .toolsMaxLoops(props.getTools() != null ? props.getTools().getMaxLoops() : 2)
                 .memoryMaxMessages(props.getMemory() != null ? props.getMemory().getMaxMessages() : null)
-                .clientTimeoutMs(props.getClient() != null ? props.getClient().getTimeoutMs() : null)
-                .streamTimeoutMs(props.getClient() != null ? props.getClient().getStreamTimeoutMs() : null)
-                .baseUrl(props.getBaseUrl())
                 .build();
         ref.set(init);
     }

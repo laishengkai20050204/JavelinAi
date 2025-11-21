@@ -1,6 +1,7 @@
 package com.example.ai;
 
 import com.example.config.AiMultiModelProperties;
+import com.example.config.EffectiveProps;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.model.ChatModel;
@@ -15,24 +16,25 @@ import java.util.concurrent.ConcurrentHashMap;
 public class MultiModelRouter {
 
     private final AiMultiModelProperties multiProps;
+    private final EffectiveProps effectiveProps;
     private final MultiModelChatModelFactory chatModelFactory;
 
-    /** profileName → ChatModel（懒加载 + 缓存） */
+    /** profileName -> ChatModel�������� + ���棩 */
     private final Map<String, ChatModel> cache = new ConcurrentHashMap<>();
 
-    /** 主控模型（ai.multi.primary-model） */
+    /** ����ģ�ͣ�ai.multi.primary-model / runtime.profile�� */
     public ChatModel getPrimary() {
-        String primary = multiProps.getPrimaryModel();
+        String primary = effectiveProps.profileOr(multiProps.getPrimaryModel());
         return get(primary);
     }
 
     /**
-     * 按 profileName 拿 ChatModel。
-     * profileName 为空时，自动使用 primary-model。
+     * ��ȡ profileName ��Ӧ�� ChatModel��
+     * profileName Ϊ��ʱ���Զ�ʹ�� primary-model���� runtime.profile����
      */
     public ChatModel get(String profileName) {
         String key = (profileName == null || profileName.isBlank())
-                ? multiProps.getPrimaryModel()
+                ? effectiveProps.profileOr(multiProps.getPrimaryModel())
                 : profileName;
 
         return cache.computeIfAbsent(key, name -> {

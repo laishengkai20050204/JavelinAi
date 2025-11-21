@@ -387,8 +387,8 @@ public class SpringAiChatGateway implements ChatGateway {
     }
 
     private List<ToolCallback> buildFrontendCallbacks(List<ToolCallPlan.ToolDef> defs,
-                                                          Set<String> allowed,
-                                                          Set<String> serverNames) {
+                                                      Set<String> allowed,
+                                                      Set<String> serverNames) {
         if (defs == null || defs.isEmpty() || allowed.isEmpty()) return List.of();
         List<ToolCallback> out = new ArrayList<>();
         for (ToolCallPlan.ToolDef def : defs) {
@@ -1092,15 +1092,3 @@ public class SpringAiChatGateway implements ChatGateway {
         }
     }
 }
-
-
-
-
-
-
-
-
-
-
-
-

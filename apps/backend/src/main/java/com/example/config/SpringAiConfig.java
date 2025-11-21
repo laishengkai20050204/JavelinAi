@@ -4,12 +4,14 @@ import com.example.ai.tools.SpringAiToolAdapter;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.model.ChatModel;
+import com.example.ai.MultiModelRouter;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.definition.ToolDefinition;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Primary;
 
 import java.util.Collections;
 import java.util.List;
@@ -36,6 +38,12 @@ public class SpringAiConfig {
     public SpringAiConfig(AiProperties properties, SpringAiToolAdapter toolAdapter) {
         this.properties = properties;
         this.toolAdapter = toolAdapter;
+    }
+
+    @Bean
+    @Primary
+    public ChatModel primaryChatModel(MultiModelRouter router) {
+        return router.getPrimary();
     }
 
     @Bean

@@ -4,8 +4,8 @@ import com.example.runtime.RuntimeConfig;
 import com.example.runtime.RuntimeConfigService;
 import lombok.RequiredArgsConstructor;
 import lombok.Setter;
-import org.springframework.stereotype.Component;
 import org.springframework.core.env.Environment;
+import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
 import java.util.Map;
@@ -25,44 +25,36 @@ public class EffectiveProps {
         return toolContextRenderMode;
     }
 
-
     private RuntimeConfig rc() { return runtime.view(); }
 
     // === 模式 ===
     public AiProperties.Mode mode() {
-        // 1) 运行时覆盖（字符�?OPENAI/OLLAMA�?
-        var r = rc();
-        if (r != null && StringUtils.hasText(r.getCompatibility())) {
-            try { return AiProperties.Mode.valueOf(r.getCompatibility().trim().toUpperCase()); }
-            catch (IllegalArgumentException ignored) {}
-        }
-        // 2) 静态回退
+        // 仅使用静态配置；不再支持 runtime 覆盖
         return (statics.getCompatibility() != null) ? statics.getMode() : AiProperties.Mode.OPENAI;
     }
 
-
-
-    // 备用：给网关内部把“入�?mode”与运行时做合并
+    // 备用：给网关内部把“入参 mode”与运行时做合并
     public AiProperties.Mode modeOr(AiProperties.Mode fallback) {
-        var r = rc();
-        if (r != null && StringUtils.hasText(r.getCompatibility())) {
-            try { return AiProperties.Mode.valueOf(r.getCompatibility().trim().toUpperCase()); }
-            catch (IllegalArgumentException ignored) {}
-        }
         return (fallback != null) ? fallback : mode();
     }
 
-    // === 供业务层调用的“最终值�?===
+    /** profile 运行时覆盖（runtime.profile），否则走提供的 fallback */
+    public String profileOr(String fallback) {
+        var r = rc();
+        if (r != null && StringUtils.hasText(r.getProfile())) {
+            return r.getProfile().trim();
+        }
+        return fallback;
+    }
+
+    // === 供业务层调用的“最终值” ===
 
     public String model() {
-        var r = rc();
-        if (r != null && r.getModel() != null && !r.getModel().isBlank()) return r.getModel();
+        // 不再支持 runtime.model；仅用静态配置
         return statics.getModel();
     }
 
     public String baseUrl() {
-        var r = rc();
-        if (r != null && r.getBaseUrl() != null && !r.getBaseUrl().isBlank()) return r.getBaseUrl();
         if (statics.getBaseUrl() != null && !statics.getBaseUrl().isBlank()) return statics.getBaseUrl();
         // Fallback to Spring AI configured base-url for current mode
         AiProperties.Mode m = mode();
@@ -72,9 +64,6 @@ public class EffectiveProps {
     }
 
     public String apiKey() {
-        var r = rc();
-        if (r != null && r.getApiKey() != null && !r.getApiKey().isBlank()) return r.getApiKey();
-        // Fallback to Spring environment (resolved application properties)
         String key = env.getProperty("spring.ai.openai.api-key");
         if (!StringUtils.hasText(key) || "dummy".equalsIgnoreCase(key)) {
             key = env.getProperty("OPENAI_API_KEY");
@@ -107,16 +96,19 @@ public class EffectiveProps {
     }
 
     public Long clientTimeoutMs() {
-        var r = rc();
-        return (r != null && r.getClientTimeoutMs() != null) ? r.getClientTimeoutMs() :
-                (statics.getClient() != null ? statics.getClient().getTimeoutMs() : null);
+        // runtime 不再覆盖
+        return (statics.getClient() != null ? statics.getClient().getTimeoutMs() : null);
     }
 
     public Long streamTimeoutMs() {
-        var r = rc();
-        return (r != null && r.getStreamTimeoutMs() != null) ? r.getStreamTimeoutMs() :
-                (statics.getClient() != null ? statics.getClient().getStreamTimeoutMs() : null);
+        return (statics.getClient() != null ? statics.getClient().getStreamTimeoutMs() : null);
     }
 
-    // （需要的话再补充 baseUrl/apiKey 等；资源类热更建议用 Reloadable�?
+    public void setStreamDecision(Boolean streamDecisionFlag) {
+        this.streamDecisionFlag = streamDecisionFlag;
+    }
+
+    public void setToolContextRenderMode(ToolContextRenderMode toolContextRenderMode) {
+        this.toolContextRenderMode = toolContextRenderMode;
+    }
 }

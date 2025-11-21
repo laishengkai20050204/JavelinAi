@@ -7,32 +7,24 @@ import lombok.extern.jackson.Jacksonized;
 
 import java.util.Map;
 
-/** 运行期可热更的关键配置（按需扩展字段） */
+/** Runtime hot-reloadable config (extend as needed). */
 @Data
 @Builder
 @Jacksonized
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class RuntimeConfig {
-    /** OPENAI / OLLAMA （字符串更好做 JSON 兼容） */
-    private String compatibility;
+    /** Preferred model profile (ai.multi.models key); null falls back to ai.multi.primary-model. */
+    private String profile;
 
-    /** 优先生效的模型名；为空则回退到 AiProperties 的 model */
-    private String model;
-
-    /** 工具循环上限（默认 2；用于 Guardrails） */
+    /** Tool loop upper bound (Guardrails). */
     @Builder.Default
     private Integer toolsMaxLoops = 10;
 
-    /** （可选）工具开关：key=工具名，value=true 启用 */
+    /** Optional tool toggles: key=tool name, value=true enables. */
     @Builder.Default
     private Map<String, Boolean> toolToggles = Map.of();
 
-    /** （可选）以后扩展：baseUrl/apiKey/timeout 并配合 Reloadable 重建客户端 */
-    private String baseUrl;
-    private String apiKey;
-    private Long clientTimeoutMs;
-    private Long streamTimeoutMs;
-
-    /** 读取记忆条数上限（用于上下文拼装/相关记忆检索）；为空则回退到静态配置 */
+    /** Max messages to fetch for memory/context; null falls back to static config. */
     private Integer memoryMaxMessages;
 }
+

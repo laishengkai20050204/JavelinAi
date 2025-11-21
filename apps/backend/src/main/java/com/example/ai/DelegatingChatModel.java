@@ -10,7 +10,6 @@ import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.ollama.OllamaChatModel;
 import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.beans.factory.ObjectProvider;
-import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import reactor.core.publisher.Flux;

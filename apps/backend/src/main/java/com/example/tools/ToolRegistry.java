@@ -1,8 +1,6 @@
 package com.example.tools;
 
-import com.example.ai.tools.SpringAiToolAdapter;
 import com.example.config.EffectiveProps;
-import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
