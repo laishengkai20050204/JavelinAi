@@ -30,6 +30,25 @@ public class MultiModelChatModelFactory {
     private final ObjectProvider<OpenAiChatModel> openAiChatModelProvider;
     private final ObjectProvider<OpenAiApi> openAiApiProvider;
 
+    public ChatModel create(String name, com.example.runtime.RuntimeConfig.ModelProfileDto dto) {
+        if (dto == null || dto.getProvider() == null) {
+            throw new IllegalArgumentException("Runtime profile is missing provider: " + name);
+        }
+        AiMultiModelProperties.ModelProfile mp = new AiMultiModelProperties.ModelProfile();
+        mp.setProvider(dto.getProvider());
+        mp.setBaseUrl(dto.getBaseUrl());
+        mp.setApiKey(dto.getApiKey());
+        mp.setModelId(dto.getModelId());
+        mp.setTemperature(dto.getTemperature());
+        mp.setMaxTokens(dto.getMaxTokens());
+        mp.setTimeoutMs(dto.getTimeoutMs());
+        mp.setToolsEnabled(dto.getToolsEnabled());
+        if (dto.getToolContextRenderMode() != null) {
+            mp.setToolContextRenderMode(com.example.config.ToolContextRenderMode.valueOf(dto.getToolContextRenderMode()));
+        }
+        return create(mp);
+    }
+
     public ChatModel create(AiMultiModelProperties.ModelProfile profile) {
         String provider = profile.getProvider();
 

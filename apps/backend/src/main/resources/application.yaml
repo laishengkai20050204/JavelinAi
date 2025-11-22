@@ -96,10 +96,10 @@ ai:
         temperature: 0.2
         tool-context-render-mode: ALL_TOOL
       gemini-vision:
-        provider: gemini
+        provider: geminiwe
         base-url: https://api.vveai.com
         api-key: ${GEMINI_API_KEY}
-        model-id: gemini-1.5-pro
+        model-id: gemini-3-pro-preview
         tool-context-render-mode: ALL_SUMMARY
 
 

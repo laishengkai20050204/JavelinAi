@@ -37,11 +37,29 @@ public class SpringToolCallPlanFactoryImpl implements ToolCallPlanFactory {
     @Override
     public ToolCallPlan buildPlan(Map<String, Object> payload, AiProperties.Mode mode) {
 
-        // 1) Model: profile wins (ignore payload.model); fallback to runtime/static default
-        String profileName = profileFromPayload(payload);
-        String model = StringUtils.hasText(profileName)
-                ? multiProps.requireProfile(profileName).getModelId()
-                : effectiveProps.model();
+        // 1) Model: profile wins (ignore payload.model); fallback: runtime.profile -> primary
+        String resolvedProfile = profileFromPayload(payload);
+        if (!StringUtils.hasText(resolvedProfile)) {
+            resolvedProfile = effectiveProps.profileOr(multiProps.getPrimaryModel());
+        }
+        String model;
+        if (StringUtils.hasText(resolvedProfile)) {
+            var runtime = effectiveProps.runtimeProfiles().get(resolvedProfile);
+            if (runtime != null && StringUtils.hasText(runtime.getModelId())) {
+                model = runtime.getModelId();
+            } else {
+                var staticProfile = multiProps.findProfile(resolvedProfile);
+                if (staticProfile != null && StringUtils.hasText(staticProfile.getModelId())) {
+                    model = staticProfile.getModelId();
+                } else {
+                    String primary = effectiveProps.profileOr(multiProps.getPrimaryModel());
+                    var primaryProfile = multiProps.requireProfile(primary);
+                    model = primaryProfile.getModelId();
+                }
+            }
+        } else {
+            model = effectiveProps.model();
+        }
 
         // 2) Temperature (optional)
         Double temperature = null;
@@ -141,9 +159,8 @@ public class SpringToolCallPlanFactoryImpl implements ToolCallPlanFactory {
         if (StringUtils.hasText(p)) return p;
         p = coerceString(payload.get("modelProfile"));
         if (StringUtils.hasText(p)) return p;
-        // 默认落到 primary-model（若未配置则返回 null）
-        String primary = multiProps.getPrimaryModel();
-        return StringUtils.hasText(primary) ? primary : null;
+        // 默认不再设置，留给调用处去使用 runtime.profile 或 primary
+        return null;
     }
 
     // =============== helpers ===============

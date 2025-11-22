@@ -47,6 +47,12 @@ public class EffectiveProps {
         return fallback;
     }
 
+    /** runtime profiles map (may be empty). */
+    public Map<String, RuntimeConfig.ModelProfileDto> runtimeProfiles() {
+        var r = rc();
+        return r != null && r.getProfiles() != null ? r.getProfiles() : Map.of();
+    }
+
     // === 供业务层调用的“最终值” ===
 
     public String model() {

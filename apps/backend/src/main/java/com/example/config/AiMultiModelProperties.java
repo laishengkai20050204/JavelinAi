@@ -8,6 +8,7 @@ import org.springframework.validation.annotation.Validated;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * 多模型配置：
@@ -56,6 +57,11 @@ public class AiMultiModelProperties {
             throw new IllegalArgumentException("Unknown AI model profile: " + name);
         }
         return profile;
+    }
+
+    /** 获取可空 profile（存在则返回，否则 null）。 */
+    public ModelProfile findProfile(String name) {
+        return Optional.ofNullable(models.get(name)).orElse(null);
     }
 
     @Data

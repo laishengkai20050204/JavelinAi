@@ -9,7 +9,7 @@ import java.util.Map;
 
 /** Runtime hot-reloadable config (extend as needed). */
 @Data
-@Builder
+@Builder(toBuilder = true)
 @Jacksonized
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class RuntimeConfig {
@@ -26,5 +26,28 @@ public class RuntimeConfig {
 
     /** Max messages to fetch for memory/context; null falls back to static config. */
     private Integer memoryMaxMessages;
+
+    /**
+     * Runtime-defined model profiles (overrides static ai.multi.models when present).
+     * key = profile name, value = definition (provider, baseUrl, apiKey, modelId...).
+     */
+    @Builder.Default
+    private Map<String, ModelProfileDto> profiles = Map.of();
+
+    @Data
+    @Builder(toBuilder = true)
+    @Jacksonized
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class ModelProfileDto {
+        private String provider;
+        private String baseUrl;
+        private String apiKey;
+        private String modelId;
+        private Double temperature;
+        private Integer maxTokens;
+        private Integer timeoutMs;
+        private Boolean toolsEnabled;
+        private String toolContextRenderMode;
+    }
 }
 

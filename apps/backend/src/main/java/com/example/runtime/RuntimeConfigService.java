@@ -6,6 +6,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Component;
 
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 
 @Component
@@ -30,6 +31,7 @@ public class RuntimeConfigService {
                 .profile(null)
                 .toolsMaxLoops(props.getTools() != null ? props.getTools().getMaxLoops() : 2)
                 .memoryMaxMessages(props.getMemory() != null ? props.getMemory().getMaxMessages() : null)
+                .profiles(Map.of())
                 .build();
         ref.set(init);
     }

@@ -1,6 +1,5 @@
 {
-  "compatibility" : "OPENAI",
-  "model" : "glm-4.6",
+  "profile" : "glm-agent",
   "toolsMaxLoops" : 100,
   "toolToggles" : {
     "debug_tool" : false,
@@ -8,9 +7,6 @@
     "find_relevant_memory" : false,
     "gpt_agent_tool" : false
   },
-  "baseUrl" : "https://dashscope.aliyuncs.com/compatible-mode",
-  "apiKey" : "sk-b977c46e3f5249bc86f6cdf499283585",
-  "clientTimeoutMs" : 180000,
-  "streamTimeoutMs" : 240000,
-  "memoryMaxMessages" : 100
+  "memoryMaxMessages" : 100,
+  "profiles" : { }
 }

@@ -2,15 +2,22 @@ package com.example.tools.impl;
 
 import com.example.ai.tools.AiToolComponent;
 import com.example.api.dto.ToolResult;
+import com.example.config.AiMultiModelProperties;
 import com.example.config.EffectiveProps;
 import com.example.file.domain.AiFile;
 import com.example.file.service.AiFileService;
 import com.example.storage.StorageService;
 import com.example.tools.AiTool;
+import com.example.tools.support.ProxySupport;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.util.StringUtils;
+import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.web.reactive.function.client.WebClientResponseException;
 
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
@@ -20,6 +27,14 @@ import java.io.InputStream;
 import java.time.Duration;
 import java.util.*;
 
+/**
+ * analyze_image 工具：
+ *
+ * - 从 MinIO 读取用户上传的图片，做基础信息解析（宽/高等）；
+ * - 使用预设的 Gemini 多模态模型（ai.multi.models.gemini-vision）直接调用 OpenAI 兼容接口，
+ *   生成概要/详细/原文/tags 等描述信息；
+ * - 不再通过 PythonExecTool + Qwen-VL，而是直接在 Java 里用 WebClient 调 Gemini。
+ */
 @Slf4j
 @AiToolComponent
 @RequiredArgsConstructor
@@ -27,18 +42,47 @@ public class AnalyzeImageTool implements AiTool {
 
     private final AiFileService aiFileService;
     private final StorageService storageService;
-    private final PythonExecTool pythonExecTool;
     private final ObjectMapper objectMapper;
-    private final EffectiveProps effectiveProps;  // ✅ 使用运行时配置
+    private final AiMultiModelProperties multiModelProperties;
+    private final EffectiveProps effectiveProps;
+    private final WebClient.Builder webClientBuilder;
 
-    // 视觉模型名可以先写死 qwen-vl-plus，将来需要也可以做成运行时配置
-    private final String visionModel = "qwen-vl-plus";
+    /**
+     * 默认使用的视觉 profile 名（在 ai.multi.models.* 中配置）。
+     *
+     * application.yaml 示例：
+     *
+     * ai:
+     *   multi:
+     *     models:
+     *       gemini-vision:
+     *         provider: gemini   # 或 openai-compatible / geminiwe，随你
+     *         base-url: https://api.vveai.com
+     *         api-key: ${GEMINI_API_KEY}
+     *         model-id: gemini-3-pro-preview
+     */
+    private static final String VISION_PROFILE = "gemini-vision";
 
-    // 调 Qwen 的超时（毫秒）
-    private final int visionTimeoutMs = 60_000;
+    /** 如果配置里没写 model-id，则使用这个默认值。 */
+    private static final String DEFAULT_VISION_MODEL = "gemini-3-pro-preview";
 
-    // 需要可以关掉就改成运行时开关，这里先始终开启
+    /** 调用视觉模型的超时时间（毫秒）。 */
+    private final int visionTimeoutMs = 5 * 60 * 1000;
+
+    /** 开关：目前始终开启，如有需要可以做成运行时配置。 */
     private final boolean visionEnable = true;
+
+    /**
+     * 给视觉模型的默认提示词。
+     * 要求模型按照 四行 固定格式输出，以便后续解析。
+     */
+    private static final String DEFAULT_VISION_PROMPT = """
+            请分四部分用中文和英文输出本图片的信息，严格按照下面格式：
+            1) 第一行以“概要：”开头，用一句话非常简要概括图片主要内容；
+            2) 第二行以“详细：”开头，用较详细的语言解释图片中的关键信息、人物/物体、动作和场景；
+            3) 第三行以“原文：”开头，如果图片中包含文字、公式或屏幕内容，请尽量逐字转写出来（可用 Markdown/LaTeX），如果没有文字就写“无”；
+            4) 第四行以“tags: ”开头，给出若干英文标签，用逗号分隔，例如：tags: math, formula, fourier, signal-processing。
+            """;
 
     @Override
     public String name() {
@@ -48,7 +92,7 @@ public class AnalyzeImageTool implements AiTool {
     @Override
     public String description() {
         return "Analyze a user-uploaded image file and return basic metadata (width/height) and a natural language "
-                + "caption using a multimodal vision model (e.g., Qwen-VL). "
+                + "caption using a multimodal vision model (Gemini or other OpenAI-compatible vision model). "
                 + "You should call this tool after list_user_files, by passing files[i].id as file_id.";
     }
 
@@ -63,7 +107,7 @@ public class AnalyzeImageTool implements AiTool {
                 "description", "ID of the file to analyze. Use list_user_files.files[].id."
         ));
 
-        // ✅ 新增：vision_prompt，可选
+        // 可选：主 LLM 可以根据用户问题生成更精准的视觉提示词
         props.put("vision_prompt", Map.of(
                 "type", "string",
                 "description", "Optional custom prompt for the vision model. "
@@ -81,7 +125,7 @@ public class AnalyzeImageTool implements AiTool {
         String conversationId = Objects.toString(args.get("conversationId"), null);
         String fileId = Objects.toString(args.get("file_id"), null);
 
-        // ✅ 读取主 LLM 传过来的提示词（可为空）
+        // 读取主 LLM 传过来的视觉提示词（可为空）
         String visionPrompt = null;
         Object vpObj = args.get("vision_prompt");
         if (vpObj != null) {
@@ -91,13 +135,13 @@ public class AnalyzeImageTool implements AiTool {
             }
         }
 
-        if (fileId == null || fileId.isBlank()) {
+        if (!StringUtils.hasText(fileId)) {
             String msg = "Missing required parameter 'file_id'.";
             log.warn("[analyze_image] {}", msg);
             return ToolResult.error(null, name(), msg);
         }
 
-        if (userId == null || conversationId == null) {
+        if (!StringUtils.hasText(userId) || !StringUtils.hasText(conversationId)) {
             String msg = "userId / conversationId missing from execution context";
             log.warn("[analyze_image] {}", msg);
             return ToolResult.error(null, name(), msg);
@@ -113,7 +157,7 @@ public class AnalyzeImageTool implements AiTool {
         AiFile f = opt.get();
 
         // 2) 安全检查：不允许跨用户
-        if (!userId.equals(f.getUserId())) {
+        if (!Objects.equals(userId, f.getUserId())) {
             String msg = String.format(
                     "File id=%s does not belong to current user (owner=%s, current=%s).",
                     fileId, f.getUserId(), userId
@@ -161,10 +205,12 @@ public class AnalyzeImageTool implements AiTool {
             if (basic != null) {
                 analysis.putAll(basic);
                 isImage = Boolean.TRUE.equals(basic.get("isImage"));
-                if (basic.get("width") instanceof Number n) {
+                Object wObj = basic.get("width");
+                Object hObj = basic.get("height");
+                if (wObj instanceof Number n) {
                     width = n.intValue();
                 }
-                if (basic.get("height") instanceof Number n) {
+                if (hObj instanceof Number n) {
                     height = n.intValue();
                 }
             }
@@ -174,15 +220,13 @@ public class AnalyzeImageTool implements AiTool {
             analysis.put("message", "Failed to read image from storage: " + e.getMessage());
         }
 
-        // 4) Qwen-VL 视觉描述（使用运行时配置的 baseUrl + apiKey）
+        // 4) 调用 Gemini 视觉模型（OpenAI 兼容接口）
         if (visionEnable && isImage) {
-            String imageUrl = buildDataUrl(f);   // ✅ 改成 Data URL
-
-            if (imageUrl != null && !imageUrl.isBlank()) {
-                String apiKey = effectiveProps.apiKey();
-                String baseUrl = effectiveProps.baseUrl();
-                Map<String, Object> vision = callQwenVision(
-                        userId, conversationId, imageUrl, apiKey, baseUrl, visionPrompt
+            // 仍然使用 data:[mime];base64,...，避免对外暴露 MinIO 地址
+            String imageUrl = buildDataUrl(f);
+            if (StringUtils.hasText(imageUrl)) {
+                Map<String, Object> vision = callGeminiVision(
+                        userId, conversationId, imageUrl, visionPrompt
                 );
                 if (vision != null && !vision.isEmpty()) {
                     analysis.putAll(vision);
@@ -191,7 +235,6 @@ public class AnalyzeImageTool implements AiTool {
                 analysis.put("vision_error", "failed to build data: URL for image, skip vision");
             }
         }
-
 
         // 5) 组装 data
         Map<String, Object> data = new LinkedHashMap<>();
@@ -249,7 +292,6 @@ public class AnalyzeImageTool implements AiTool {
             }
         }
 
-
         String summary = sb.toString();
         data.put("summary", summary);
         data.put("text", summary);
@@ -258,234 +300,253 @@ public class AnalyzeImageTool implements AiTool {
     }
 
     /**
-     * 用 python_exec 在容器里调用 Qwen-VL (DashScope OpenAI 兼容接口)。
-     * 使用 EffectiveProps 提供的 apiKey/baseUrl，而不是环境变量。
+     * 使用 WebClient 调用 Gemini（或其他 OpenAI 兼容视觉模型）。
+     *
+     * - 优先从 ai.multi.models.gemini-vision 读取 baseUrl / apiKey / modelId；
+     * - 如果找不到 profile 或 apiKey 为空，可按需扩展为从环境变量 GEMINI_API_KEY 读取；
+     * - 请求体采用 OpenAI Chat Completions + image_url 格式。
      */
-    private Map<String, Object> callQwenVision(
+    private Map<String, Object> callGeminiVision(
             String userId,
             String conversationId,
             String imageUrl,
-            String apiKey,
-            String baseUrl,
             String customPrompt
     ) {
-        if (apiKey == null || apiKey.isBlank()) {
-            String msg = "API key is not configured in EffectiveProps.apiKey().";
+        // 1) 解析多模型配置
+        AiMultiModelProperties.ModelProfile profile = null;
+        com.example.runtime.RuntimeConfig.ModelProfileDto runtimeProfile =
+                effectiveProps != null ? effectiveProps.runtimeProfiles().get(VISION_PROFILE) : null;
+        if (multiModelProperties != null) {
+            try {
+                profile = multiModelProperties.findProfile(VISION_PROFILE);
+            } catch (Exception e) {
+                log.warn("[analyze_image] failed to read multi-model profile '{}': {}", VISION_PROFILE, e.toString());
+            }
+        }
+
+        String apiKey = null;
+        String baseUrl = null;
+        String model = DEFAULT_VISION_MODEL;
+
+        if (runtimeProfile != null) {
+            if (StringUtils.hasText(runtimeProfile.getApiKey())) {
+                apiKey = runtimeProfile.getApiKey();
+            }
+            if (StringUtils.hasText(runtimeProfile.getBaseUrl())) {
+                baseUrl = runtimeProfile.getBaseUrl();
+            }
+            if (StringUtils.hasText(runtimeProfile.getModelId())) {
+                model = runtimeProfile.getModelId();
+            }
+        } else if (profile != null) {
+            if (StringUtils.hasText(profile.getApiKey())) {
+                apiKey = profile.getApiKey();
+            }
+            if (StringUtils.hasText(profile.getBaseUrl())) {
+                baseUrl = profile.getBaseUrl();
+            }
+            if (StringUtils.hasText(profile.getModelId())) {
+                model = profile.getModelId();
+            }
+        }
+
+        // 可选：环境变量兜底
+        if (!StringUtils.hasText(apiKey)) {
+            String envKey = System.getenv("GEMINI_API_KEY");
+            if (StringUtils.hasText(envKey)) {
+                apiKey = envKey;
+            }
+        }
+
+        if (!StringUtils.hasText(apiKey)) {
+            String msg = "Gemini vision API key is not configured (ai.multi.models."
+                    + VISION_PROFILE + ".api-key or GEMINI_API_KEY).";
             log.warn("[analyze_image] {}", msg);
             return Map.of("vision_error", msg);
         }
 
-        // ✅ 统一规范 baseUrl（补 /v1）
+        if (!StringUtils.hasText(baseUrl)) {
+            baseUrl = "https://api.vveai.com";
+        }
+
+        // 规范化 baseUrl，确保以 /v1 结尾，便于直接 POST /chat/completions
         baseUrl = normalizeBaseUrl(baseUrl);
 
-        Map<String, Object> cfg = new LinkedHashMap<>();
-        cfg.put("image_url", imageUrl);
-        cfg.put("model", visionModel);
-        cfg.put("api_key", apiKey);
-        cfg.put("base_url", baseUrl);
-
-        // ✅ 把主 LLM 想好的提示词传给 Python/Qwen（可以为 null）
-        if (customPrompt != null && !customPrompt.isBlank()) {
-            cfg.put("prompt", customPrompt);
-        }
-
-        String cfgJson;
-        try {
-            cfgJson = objectMapper.writeValueAsString(cfg);
-        } catch (Exception e) {
-            log.warn("[analyze_image] failed to serialize vision cfg", e);
-            return Map.of("vision_error", "serialize_cfg_failed: " + e.getMessage());
-        }
-
-        String safeCfg = cfgJson
-                .replace("\\", "\\\\")
-                .replace("'", "\\'");
-
-        String code = """
-import json
-from openai import OpenAI
-
-cfg = json.loads('%s')
-
-def main():
-    image_url = cfg.get("image_url")
-    # 让模型按固定格式输出四段内容：概要 / 详细 / 原文 / tags
-    prompt = cfg.get("prompt") or (
-        "请分四部分用中文和英文输出本图片的信息，严格按照下面格式：\\n"
-        "1) 第一行以“概要：”开头，用一句话非常简要概括图片主要内容；\\n"
-        "2) 第二行以“详细：”开头，用较详细的语言解释图片中的关键信息、人物/物体、动作和场景；\\n"
-        "3) 第三行以“原文：”开头，如果图片中包含文字、公式或屏幕内容，请尽量逐字转写出来（可用 Markdown/LaTeX），如果没有文字就写“无”；\\n"
-        "4) 第四行以“tags: ”开头，给出若干英文标签，用逗号分隔，例如：tags: math, formula, fourier, signal-processing。"
-    )
-    model = cfg.get("model") or "qwen-vl-plus"
-
-    api_key = cfg.get("api_key")
-    base_url = cfg.get("base_url") or "https://dashscope.aliyuncs.com/compatible-mode/v1"
-
-    if not api_key:
-        raise RuntimeError("API key (cfg.api_key) is empty")
-
-    client = OpenAI(
-        api_key=api_key,
-        base_url=base_url,
-    )
-
-    completion = client.chat.completions.create(
-        model=model,
-        messages=[{
-            "role": "user",
-            "content": [
-                {"type": "image_url", "image_url": {"url": image_url}},
-                {"type": "text", "text": prompt}
-            ]
-        }]
-    )
-
-    msg = completion.choices[0].message
-    content = msg.content
-    # openai v1: content 可以是 str 或 list[part]
-    if isinstance(content, list):
-        text = "".join(
-            (part.get("text", "") if isinstance(part, dict) else str(part))
-            for part in content
-        )
-    else:
-        text = str(content)
-
-    # 解析四段：概要 / 详细 / 原文 / tags
-    caption_brief = None
-    caption_detail = None
-    original = None
-    tags = []
-
-    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-    for ln in lines:
-        lower = ln.lower()
-        if ln.startswith("概要：") or ln.startswith("概要:"):
-            caption_brief = ln.split("：", 1)[-1] if "：" in ln else ln.split(":", 1)[-1]
-            caption_brief = caption_brief.strip()
-        elif ln.startswith("详细：") or ln.startswith("详细:"):
-            caption_detail = ln.split("：", 1)[-1] if "：" in ln else ln.split(":", 1)[-1]
-            caption_detail = caption_detail.strip()
-        elif ln.startswith("原文：") or ln.startswith("原文:"):
-            original = ln.split("：", 1)[-1] if "：" in ln else ln.split(":", 1)[-1]
-            original = original.strip()
-        elif lower.startswith("tags:"):
-            tags_part = ln[len("tags:"):].strip()
-            raw_tags = [t.strip() for t in tags_part.replace("，", ",").split(",")]
-            tags = [t for t in raw_tags if t]
-
-    # 回退策略：如果模型没完全遵守格式，就用整段 text 顶上
-    if not caption_detail and caption_brief:
-        caption_detail = caption_brief
-    if not caption_brief and caption_detail:
-        caption_brief = caption_detail
-    if not caption_brief and not caption_detail:
-        caption_brief = text.strip()
-        caption_detail = text.strip()
-
-    result = {
-        "caption_brief": caption_brief,
-        "caption_detail": caption_detail,
-        "original": original,
-        "tags": tags,
-        "raw": text,
-    }
-    # 为了兼容旧代码，caption 用详细版
-    result["caption"] = caption_detail
-
-    print(json.dumps(result, ensure_ascii=False))
-
-if __name__ == "__main__":
-    main()
-""" .formatted(safeCfg);
-
-
-        Map<String, Object> pyArgs = new LinkedHashMap<>();
-        pyArgs.put("user_id", userId);
-        pyArgs.put("conversation_id", conversationId);
-        pyArgs.put("code", code);
-        pyArgs.put("pip", List.of("openai>=1.0.0,<2.0.0"));
-        pyArgs.put("timeout_ms", visionTimeoutMs);
+        String prompt = StringUtils.hasText(customPrompt) ? customPrompt : DEFAULT_VISION_PROMPT;
 
         try {
-            ToolResult r = pythonExecTool.execute(pyArgs);
-            if (!"SUCCESS".equals(r.status())) {
-                Object dataObj = r.data();
-                String msg;
-                if (dataObj instanceof Map<?,?> m && m.get("message") != null) {
-                    msg = String.valueOf(m.get("message"));
-                } else {
-                    msg = "python_exec status=" + r.status();
+            WebClient.Builder builder = webClientBuilder
+                    .clone()
+                    .baseUrl(baseUrl)
+                    .defaultHeader(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey);
+            builder = ProxySupport.configureWebClientProxyFromEnv(builder, "analyze_image");
+            WebClient client = builder.build();
+
+            Map<String, Object> imagePart = Map.of(
+                    "type", "image_url",
+                    "image_url", Map.of("url", imageUrl)
+            );
+            Map<String, Object> textPart = Map.of(
+                    "type", "text",
+                    "text", prompt
+            );
+
+            Map<String, Object> msg = new LinkedHashMap<>();
+            msg.put("role", "user");
+            msg.put("content", List.of(imagePart, textPart));
+
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("model", model);
+            body.put("messages", List.of(msg));
+
+            Duration timeout = Duration.ofMillis(visionTimeoutMs);
+
+            JsonNode root = client.post()
+                    .uri("/chat/completions")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .accept(MediaType.APPLICATION_JSON)
+                    .bodyValue(body)
+                    .retrieve()
+                    .bodyToMono(JsonNode.class)
+                    .timeout(timeout)
+                    .block();
+
+            if (root == null) {
+                return Map.of("vision_error", "Empty response from Gemini vision API");
+            }
+
+            JsonNode choices = root.path("choices");
+            if (!choices.isArray() || choices.isEmpty()) {
+                return Map.of("vision_error", "No choices in Gemini vision response");
+            }
+
+            JsonNode first = choices.get(0);
+            JsonNode messageNode = first.path("message");
+            JsonNode contentNode = messageNode.get("content");
+
+            String text;
+            if (contentNode == null || contentNode.isNull()) {
+                text = "";
+            } else if (contentNode.isArray()) {
+                StringBuilder sb = new StringBuilder();
+                for (JsonNode part : contentNode) {
+                    JsonNode t = part.get("text");
+                    if (t != null && !t.isNull()) {
+                        sb.append(t.asText());
+                    }
                 }
-                log.warn("[analyze_image] python_exec vision failed: {}", msg);
-                return Map.of("vision_error", msg);
+                text = sb.toString();
+            } else {
+                text = contentNode.asText();
             }
 
-            Object dataObj = r.data();
-            if (!(dataObj instanceof Map<?,?> dataMap)) {
-                return Map.of("vision_error", "python_exec data is not a map");
+            if (!StringUtils.hasText(text)) {
+                return Map.of("vision_error", "Gemini vision returned empty content");
             }
 
-            Object stdoutObj = dataMap.get("stdout");
-            if (stdoutObj == null) {
-                return Map.of("vision_error", "python_exec stdout is null");
+            Map<String, Object> parsed = parseVisionText(text);
+            // 兼容字段：caption（默认用详细版）
+            Object captionDetail = parsed.get("caption_detail");
+            if (captionDetail instanceof String s && StringUtils.hasText(s)) {
+                parsed.put("caption", s);
+            } else if (parsed.get("caption") == null) {
+                parsed.put("caption", text.trim());
             }
-            String stdout = stdoutObj.toString().trim();
-            if (stdout.isEmpty()) {
-                return Map.of("vision_error", "python_exec stdout is empty");
-            }
-
-            JsonNode node = objectMapper.readTree(stdout);
-            Map<String, Object> result = new LinkedHashMap<>();
-
-// 新增字段：caption_brief / caption_detail / original
-            if (node.hasNonNull("caption_brief")) {
-                result.put("caption_brief", node.get("caption_brief").asText());
-            }
-            if (node.hasNonNull("caption_detail")) {
-                result.put("caption_detail", node.get("caption_detail").asText());
-            }
-            if (node.hasNonNull("original")) {
-                result.put("original", node.get("original").asText());
-            }
-
-// 兼容字段：caption（默认用详细版）
-            String caption = null;
-            if (node.hasNonNull("caption")) {
-                caption = node.get("caption").asText();
-            } else if (node.hasNonNull("caption_detail")) {
-                caption = node.get("caption_detail").asText();
-            }
-            if (caption != null) {
-                result.put("caption", caption);
-            }
-
-            if (node.has("tags") && node.get("tags").isArray()) {
-                List<String> tags = new ArrayList<>();
-                for (JsonNode t : node.get("tags")) {
-                    tags.add(t.asText());
-                }
-                result.put("tags", tags);
-            }
-            if (node.hasNonNull("raw")) {
-                result.put("raw", node.get("raw").asText());
-            }
-            return result;
-
+            parsed.put("raw", text);
+            return parsed;
+        } catch (WebClientResponseException wex) {
+            String msg = "Gemini HTTP " + wex.getRawStatusCode() + ": " + wex.getResponseBodyAsString();
+            log.warn("[analyze_image] Gemini vision HTTP error: {}", msg);
+            return Map.of("vision_error", msg);
         } catch (Exception e) {
-            log.warn("[analyze_image] vision call exception", e);
+            log.warn("[analyze_image] Gemini vision call exception", e);
             return Map.of("vision_error", e.getMessage());
         }
     }
 
     /**
+     * 解析模型按照固定格式返回的四行文本。
+     */
+    private Map<String, Object> parseVisionText(String text) {
+        String captionBrief = null;
+        String captionDetail = null;
+        String original = null;
+        List<String> tags = new ArrayList<>();
+
+        String[] lines = text.split("\\r?\\n");
+        for (String raw : lines) {
+            String ln = raw == null ? "" : raw.trim();
+            if (ln.isEmpty()) continue;
+            String lower = ln.toLowerCase(Locale.ROOT);
+
+            if (ln.startsWith("概要：") || ln.startsWith("概要:")) {
+                captionBrief = extractAfterColon(ln);
+            } else if (ln.startsWith("详细：") || ln.startsWith("详细:")) {
+                captionDetail = extractAfterColon(ln);
+            } else if (ln.startsWith("原文：") || ln.startsWith("原文:")) {
+                original = extractAfterColon(ln);
+            } else if (lower.startsWith("tags:")) {
+                String tagsPart = ln.substring(5).trim();
+                tagsPart = tagsPart.replace("，", ",");
+                String[] rawTags = tagsPart.split(",");
+                for (String t : rawTags) {
+                    String tag = t.trim();
+                    if (!tag.isEmpty()) {
+                        tags.add(tag);
+                    }
+                }
+            }
+        }
+
+        if (captionDetail == null && captionBrief != null) {
+            captionDetail = captionBrief;
+        }
+        if (captionBrief == null && captionDetail != null) {
+            captionBrief = captionDetail;
+        }
+        if (captionBrief == null && captionDetail == null) {
+            String trimmed = text == null ? "" : text.trim();
+            if (!trimmed.isEmpty()) {
+                captionBrief = trimmed;
+                captionDetail = trimmed;
+            }
+        }
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        if (captionBrief != null) {
+            result.put("caption_brief", captionBrief);
+        }
+        if (captionDetail != null) {
+            result.put("caption_detail", captionDetail);
+        }
+        if (original != null) {
+            result.put("original", original);
+        }
+        if (!tags.isEmpty()) {
+            result.put("tags", tags);
+        }
+        return result;
+    }
+
+    private String extractAfterColon(String line) {
+        if (line == null) return null;
+        int idx = line.indexOf('：');
+        if (idx < 0) {
+            idx = line.indexOf(':');
+        }
+        if (idx >= 0 && idx + 1 < line.length()) {
+            return line.substring(idx + 1).trim();
+        }
+        return line.trim();
+    }
+
+    /**
      * 把 MinIO 里的图片读出来，转成 data:[mime];base64,xxxx 形式。
-     * 这里为了安全，限制最大 1MB（可按需调大），避免超大图直接塞进请求。
+     * 这里为了安全，限制最大 4MB（可按需调大），避免超大图直接塞进请求。
      */
     private String buildDataUrl(AiFile f) {
         long size = Optional.ofNullable(f.getSizeBytes()).orElse(0L);
-        long MAX_INLINE = 4L * 1024 * 1024; // 1MB，你可以改成 2MB/4MB
+        long MAX_INLINE = 4L * 1024 * 1024; // 4MB
         if (size <= 0 || size > MAX_INLINE) {
             log.warn("[analyze_image] file too large for inline data url: {} bytes (max={})",
                     size, MAX_INLINE);
@@ -504,10 +565,12 @@ if __name__ == "__main__":
                         int len;
                         while (true) {
                             try {
-                                if ((len = in.read(buf)) == -1) break;
+                                len = in.read(buf);
+                                if (len == -1) break;
                                 bos.write(buf, 0, len);
                             } catch (IOException e) {
-                                log.error("读取文件失败 ", e);
+                                log.error("读取文件失败", e);
+                                break;
                             }
                         }
                         return bos.toByteArray();
@@ -527,36 +590,23 @@ if __name__ == "__main__":
         }
     }
 
-
     /**
      * 规范化 baseUrl：
-     * - 如果是 dashscope.aliyuncs.com 且路径是 /compatible-mode 或 /compatible-mode/，自动补上 /v1
-     * - 其他情况原样返回（比如已经是 .../v1，或者是 OpenAI / GLM 的地址）
+     * - 去掉末尾多余的 /
+     * - 如果是类似 https://api.xxx.com，则自动补成 https://api.xxx.com/v1
+     * - 如果已经以 /v1 结尾，则不再追加
      */
     private String normalizeBaseUrl(String baseUrl) {
-        if (baseUrl == null || baseUrl.isBlank()) {
-            return "https://dashscope.aliyuncs.com/compatible-mode/v1";
+        if (!StringUtils.hasText(baseUrl)) {
+            return "https://api.vveai.com/v1";
         }
         String trimmed = baseUrl.trim();
-        // 去掉末尾多余的 '/'
         while (trimmed.endsWith("/")) {
             trimmed = trimmed.substring(0, trimmed.length() - 1);
         }
-
-        // 只对 dashscope 的地址做智能补全
-        if (trimmed.contains("dashscope.aliyuncs.com")) {
-            // 已经有 /v1 就不动
-            if (trimmed.endsWith("/v1")) {
-                return trimmed;
-            }
-            // 如果刚好到 /compatible-mode，就补 /v1
-            if (trimmed.endsWith("/compatible-mode")) {
-                return trimmed + "/v1";
-            }
+        if (trimmed.endsWith("/v1")) {
+            return trimmed;
         }
-
-        // 其他 provider 保持原样（比如已经是 /v1 或者本身就是别家的）
-        return trimmed;
+        return trimmed + "/v1";
     }
-
 }
