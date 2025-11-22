@@ -9,11 +9,14 @@ import io.minio.http.Method;
 import io.minio.messages.Item;
 import org.apache.tika.Tika;
 import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
+import org.springframework.web.util.UriUtils;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
 import java.io.*;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -277,5 +280,73 @@ public class MinioStorageService implements StorageService {
         String base = s.replaceAll("[/\\\\]+", "_").replaceAll("[^a-zA-Z0-9._-]", "_");
         // 避免过长
         return base.length() > 120 ? base.substring(0, 120) : base;
+    }
+
+
+    /**
+     * 使用配置的 publicBaseUrl 构建公共访问 URL；
+     * 如果未配置 publicBaseUrl，则直接返回 MinIO 预签名 URL。
+     */
+    public String buildPublicReadUrl(String bucket, String objectKey) {
+        return buildPublicReadUrl(bucket, objectKey, Duration.ofMinutes(10));
+    }
+
+    /**
+     * 重载：可以指定预签名 URL 的过期时间。
+     *
+     * 语义：
+     * - 不管有没有 publicBaseUrl，先用 MinIO 生成一个内部预签名 URL；
+     * - 如果配置了 publicBaseUrl（例如 https://javelinai.cloud:65019/minio），
+     *   就把这个内部 URL 的 host/path 映射到 publicBaseUrl 上；
+     * - 如果没配置 publicBaseUrl，就直接返回内部预签名 URL。
+     */
+    public String buildPublicReadUrl(String bucket, String objectKey, Duration expiry) {
+        Duration effective = (expiry != null ? expiry : Duration.ofMinutes(10));
+
+        // 1) 先拿到 MinIO 自己生成的预签名 URL（一般是 http://127.0.0.1:9000/bucket/object?...）
+        String internal = presignGet(bucket, objectKey, effective)
+                .block(Duration.ofSeconds(5));
+
+        String base = props.getPublicBaseUrl(); // 例如 https://javelinai.cloud:65019/minio
+
+        // 没配 publicBaseUrl，直接用内部预签名 URL
+        if (!StringUtils.hasText(base) || internal == null || internal.isBlank()) {
+            return internal;
+        }
+
+        try {
+            java.net.URI internalUri = java.net.URI.create(internal);
+
+            String trimmed = base.trim();
+            while (trimmed.endsWith("/")) {
+                trimmed = trimmed.substring(0, trimmed.length() - 1);
+            }
+
+            StringBuilder sb = new StringBuilder();
+            sb.append(trimmed); // 比如 https://javelinai.cloud:65019/minio
+
+            String path = internalUri.getPath(); // /javelin-exec/python-outputs/...
+            if (path != null && !path.isEmpty()) {
+                if (!path.startsWith("/")) {
+                    sb.append('/');
+                }
+                sb.append(path);
+            }
+
+            String query = internalUri.getQuery();
+            if (query != null && !query.isEmpty()) {
+                sb.append('?').append(query);
+            }
+
+            String fragment = internalUri.getFragment();
+            if (fragment != null && !fragment.isEmpty()) {
+                sb.append('#').append(fragment);
+            }
+
+            return sb.toString();
+        } catch (Exception e) {
+            // 出问题就退回原始预签名 URL
+            return internal;
+        }
     }
 }

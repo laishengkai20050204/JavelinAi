@@ -3,6 +3,7 @@ package com.example.tools.impl;
 import com.example.ai.tools.AiToolComponent;
 import com.example.api.dto.ToolResult;
 import com.example.storage.StorageService;
+import com.example.storage.impl.MinioStorageService;
 import com.example.tools.AiTool;
 import com.example.tools.impl.docker.DockerEphemeralRunner;
 import com.example.tools.impl.docker.PythonContainerPool;
@@ -234,9 +235,8 @@ public class PythonExecTool implements AiTool {
                     try {
                         // 上传
                         storageService.uploadFile(bucket, objectKey, p).block(Duration.ofMinutes(2));
-                        // 预签名 1 小时
-                        String url = storageService.presignGet(bucket, objectKey, Duration.ofHours(1))
-                                .block(Duration.ofSeconds(5));
+                        // ⭐ 使用对外域名 / 预签名 URL 封装方法
+                        String url = buildPublicFileUrl(bucket, objectKey);
 
                         Map<String, Object> meta = new LinkedHashMap<>();
                         meta.put("key", objectKey);
@@ -415,6 +415,28 @@ public class PythonExecTool implements AiTool {
             return sb.toString();
         } catch (Exception e) {
             return Integer.toHexString(Objects.hashCode(s));
+        }
+    }
+
+
+    /**
+     * 统一构造“前端/LLM 可以直接访问”的文件 URL：
+     * - 如果 StorageService 是 MinioStorageService，则优先用对外暴露域名（publicBaseUrl）
+     * - 否则 fallback 到 presignGet（返回 MinIO 自己的预签名 URL）
+     */
+    private String buildPublicFileUrl(String bucket, String objectKey) {
+        try {
+            if (storageService instanceof MinioStorageService minio) {
+                // ⭐ 这里用的是你在 MinioStorageService 里实现的 buildPublicReadUrl
+                return minio.buildPublicReadUrl(bucket, objectKey, Duration.ofMinutes(10));
+            }
+
+            // 兜底：如果不是 Minio 实现，就继续用 presignGet
+            return storageService.presignGet(bucket, objectKey, Duration.ofHours(1))
+                    .block(Duration.ofSeconds(5));
+        } catch (Exception e) {
+            log.warn("[python_exec] buildPublicFileUrl failed for {}/{}", bucket, objectKey, e);
+            return null;
         }
     }
 }

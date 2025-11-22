@@ -19,5 +19,8 @@ public class MinioProps {
     private String defaultBucket = "javelin-dev";
     private int presignExpirySeconds = 3600;
 
+    /** 对外暴露的 HTTP 基址，例如 <a href="https://javelinai.cloud:65019/minio">...</a> */
+    private String publicBaseUrl;
+
     // getters/setters ...
 }

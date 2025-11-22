@@ -8,8 +8,6 @@ import com.example.infra.FinalAnswerStreamManager;
 import com.example.infra.StepSseHub;
 import com.example.service.ConversationMemoryService;
 import com.example.service.DecisionService;
-import com.example.tools.support.JsonCanonicalizer;
-import com.example.util.Fingerprint;
 import com.example.util.MsgTrace;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -22,7 +20,6 @@ import reactor.core.publisher.Mono;
 
 import java.time.Duration;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
 
 @Slf4j
 @Service
@@ -34,7 +31,6 @@ public class DecisionServiceSpringAi implements DecisionService {
     private final EffectiveProps effectiveProps;
     private final ObjectMapper mapper;
     private final ConversationMemoryService memoryService;
-    private final Map<String, Set<String>> decisionSeen = new ConcurrentHashMap<>();
     private final ChatGateway gateway;
 
     // ★ 新增：用于把“决策”也做成流（T 型分支）
@@ -55,7 +51,7 @@ public class DecisionServiceSpringAi implements DecisionService {
 
         // —— 统一的 payload
         Map<String, Object> payload = new HashMap<>();
-        payload.put("model", activeModelName );
+        payload.put("model", activeModelName);
         payload.put("messages", messages);
         payload.put("_flattened", true);
         payload.put("_tamperSeal", m2Digest);
@@ -83,13 +79,22 @@ public class DecisionServiceSpringAi implements DecisionService {
             streamMgr.start(streamId, payload);
 
             // 2) 把“决策流”的 token 直接转给同一个 step 的 SSE（事件名仍是 "message"）
-            sseHub.forward(st.stepId(), streamMgr.sse(streamId, activeModelName ));
+            sseHub.forward(st.stepId(), streamMgr.sse(streamId, activeModelName));
 
             // 3) 等聚合结果（content + tool_calls）
             Duration idle = java.util.Optional.ofNullable(effectiveProps.streamTimeoutMs())
                     .map(java.time.Duration::ofMillis)
                     .orElse(java.time.Duration.ofSeconds(90));
             return streamMgr.awaitAggregated(streamId, idle)
+                    // ⭐ 第 1 层：看看聚合结果里到底有没有 toolCalls
+                    .doOnNext(agg -> {
+                        log.info(
+                                "[DECISION-AGG] step={} toolCallsRawSize={} contentLen={}",
+                                st != null ? st.stepId() : "<null-step>",
+                                (agg.toolCalls == null ? -1 : agg.toolCalls.size()),
+                                (agg.content == null ? 0 : agg.content.length())
+                        );
+                    })
                     .map(agg -> {
                         // 3.1 解析 tool_calls -> List<ToolCall>
                         List<ToolCall> calls = new ArrayList<>();
@@ -106,21 +111,28 @@ public class DecisionServiceSpringAi implements DecisionService {
                             calls.add(ToolCall.of(id, name, args, target));
                         }
 
+                        log.info(
+                                "[DECISION-PARSED] step={} callsSize={} userId={} convId={}",
+                                st != null ? st.stepId() : "<null-step>",
+                                calls.size(),
+                                (st != null && st.req() != null ? st.req().userId() : "<null-req>"),
+                                (st != null && st.req() != null ? st.req().conversationId() : "<null-req>")
+                        );
+
                         String assistantDraft = StringUtils.hasText(agg.content) ? agg.content : null;
 
-                        // 3.2（可选）持久化一条“决策草稿”，与你原有 call() 分支一致
+                        // 3.2 持久化一条“决策草稿”（不再做指纹去重）
                         if (!calls.isEmpty()
                                 && st != null && st.req() != null
                                 && StringUtils.hasText(st.req().userId())
                                 && StringUtils.hasText(st.req().conversationId())) {
-                            String fp = fingerprintToolCalls(calls);
-                            if (markDecisionOnce(st.stepId(), fp)) {
-                                persistAssistantDecisionDraft(
-                                        memoryService, mapper,
-                                        st.req().userId(), st.req().conversationId(), st.stepId(),
-                                        calls, assistantDraft
-                                );
-                            }
+
+                            log.info("[DECISION-DRAFT] streaming persist decision for step={}", st.stepId());
+                            persistAssistantDecisionDraft(
+                                    memoryService, mapper,
+                                    st.req().userId(), st.req().conversationId(), st.stepId(),
+                                    calls, assistantDraft
+                            );
                         }
 
                         return new ModelDecision(calls, assistantDraft);
@@ -139,17 +151,17 @@ public class DecisionServiceSpringAi implements DecisionService {
                         if (!calls.isEmpty() && st != null && st.req() != null
                                 && StringUtils.hasText(st.req().userId())
                                 && StringUtils.hasText(st.req().conversationId())) {
-                            String fp = fingerprintToolCalls(calls);
-                            if (markDecisionOnce(st.stepId(), fp)) {
-                                persistAssistantDecisionDraft(
-                                        memoryService, mapper,
-                                        st.req().userId(), st.req().conversationId(), st.stepId(),
-                                        calls, draft
-                                );
-                            }
+
+                            log.info("[DECISION-DRAFT] non-stream persist decision for step={}", st.stepId());
+                            persistAssistantDecisionDraft(
+                                    memoryService, mapper,
+                                    st.req().userId(), st.req().conversationId(), st.stepId(),
+                                    calls, draft
+                            );
                         }
                         return new ModelDecision(calls, (draft != null && !draft.isBlank()) ? draft : null);
                     } catch (Exception e) {
+                        log.warn("[DECISION] parse model response failed, return empty decision", e);
                         return ModelDecision.empty();
                     }
                 });
@@ -157,8 +169,8 @@ public class DecisionServiceSpringAi implements DecisionService {
 
     @Override
     public void clearStep(String stepId) {
+        // 之前是清除指纹去重缓存，现在指纹逻辑删掉，这里就变成 no-op。
         if (stepId == null) return;
-        decisionSeen.remove(stepId);
     }
 
     private String asString(Object o) { return (o == null) ? null : o.toString(); }
@@ -197,17 +209,12 @@ public class DecisionServiceSpringAi implements DecisionService {
         return out;
     }
 
-
     private static String truncate(String s, int max) {
         if (s == null || s.length() <= max) return s;
         return s.substring(0, Math.max(0, max)) + "...(truncated)";
     }
 
-
-
     // ---- helpers ----
-
-
 
     private Map<String, Object> msg(String role, String content) {
         return Map.of("role", role, "content", content);
@@ -277,6 +284,12 @@ public class DecisionServiceSpringAi implements DecisionService {
             Integer max = memoryService.findMaxSeq(userId, conversationId, stepId);
             int seq = (max == null ? 0 : max) + 1;
 
+            log.info(
+                    "[DECISION-DRAFT] persist decision: user={} conv={} step={} calls={} draftLen={}",
+                    userId, conversationId, stepId, calls.size(),
+                    (assistantDraft != null ? assistantDraft.length() : 0)
+            );
+
             // 统一保存成 OpenAI 风格结构，后续回灌最稳
             List<Map<String, Object>> tcPayload = new ArrayList<>();
             for (var c : calls) {
@@ -298,7 +311,6 @@ public class DecisionServiceSpringAi implements DecisionService {
                     "stepId",     stepId
             );
 
-            // 这里把 content 写成 LLM 的文本草稿（可能是对工具调用的解释/过场话术）
             String contentToSave = (assistantDraft != null && !assistantDraft.isBlank())
                     ? assistantDraft
                     : "";
@@ -307,7 +319,7 @@ public class DecisionServiceSpringAi implements DecisionService {
                     userId,
                     conversationId,
                     "assistant",                 // ← 决策来自 assistant
-                    contentToSave,                          // content 为空（只存决策结构）
+                    contentToSave,               // 文本草稿
                     objectMapper.writeValueAsString(payload),
                     stepId,
                     seq,
@@ -321,35 +333,6 @@ public class DecisionServiceSpringAi implements DecisionService {
                     userId, conversationId, stepId, e.toString());
         }
     }
-
-    private boolean markDecisionOnce(String stepId, String decisionFp) {
-        return decisionSeen
-                .computeIfAbsent(stepId, k -> ConcurrentHashMap.newKeySet())
-                .add(decisionFp);
-    }
-
-    private String fingerprintToolCalls(List<ToolCall> calls) {
-        List<String> parts = new ArrayList<>();
-        for (ToolCall c : calls) {
-            String argsStr = c.stableArgs(mapper); // 你的 ToolCall 已有稳定参数方法
-            try {
-                // 规范化，忽略抖动字段（按你去重账本的习惯）
-                var canon = JsonCanonicalizer.normalize(
-                        mapper,
-                        mapper.readTree(argsStr),
-                        Set.of("nonce","timestamp","requestId")
-                ).toString();
-                parts.add(c.name() + "::" + canon);
-            } catch (Exception e) {
-                // 兜底：解析失败也别中断
-                parts.add(c.name() + "::" + String.valueOf(argsStr));
-            }
-        }
-        Collections.sort(parts);
-        return Fingerprint.sha256(String.join("|", parts));
-    }
-
-    // 在类里面任意位置加一个私有方法（比如在 decide() 后面）：
 
     /**
      * 解析本 step 要用的模型：
@@ -365,6 +348,4 @@ public class DecisionServiceSpringAi implements DecisionService {
         }
         return effectiveProps.model();
     }
-
-
 }

@@ -101,6 +101,14 @@ ai:
         api-key: ${GEMINI_API_KEY}
         model-id: gemini-3-pro-preview
         tool-context-render-mode: ALL_SUMMARY
+      qwen-vision:
+        provider: qwen
+        base-url: https://dashscope.aliyuncs.com/compatible-mode
+        api-key: ${QWEN_API_KEY}
+        model-id: qwen3-vl-plus
+        temperature: 0.1
+        tool-context-render-mode: ALL_SUMMARY
+
 
 
 
@@ -153,3 +161,4 @@ storage:
     secure: false                     # http=false / https=true
     defaultBucket: javelin-exec        # 建议预设一个默认桶
     presignExpirySeconds: 3600        # 预签名URL有效期（秒）
+    public-base-url: https://javelinai.cloud:65019/minio

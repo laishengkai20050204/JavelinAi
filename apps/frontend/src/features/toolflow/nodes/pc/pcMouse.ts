@@ -7,6 +7,9 @@ const CURRENT_ORIGIN =
     typeof window !== "undefined" && window.location ? window.location.origin : "";
 const DEFAULT_BASE_URL = CURRENT_ORIGIN || "";
 
+// 默认的本机控制服务 API Key（要和 FastAPI 那边的 API_KEY 对上）
+const DEFAULT_API_KEY = "change-me-please";
+
 // ===== 通用小工具函数 =====
 function toNumber(v: any, fallback: number): number {
     const n = typeof v === "number" ? v : Number(v);
@@ -18,6 +21,12 @@ function getBaseUrl(api: any): string {
     const raw = (api?.ctx?.pcAgentBaseUrl as string | undefined) ?? DEFAULT_BASE_URL;
     if (!raw) return "";
     return raw.endsWith("/") ? raw.slice(0, -1) : raw;
+}
+
+// 从 api.ctx 里拿 apiKey，没有就用默认值
+function getApiKey(api: any): string {
+    const raw = (api?.ctx?.pcAgentApiKey as string | undefined) ?? DEFAULT_API_KEY;
+    return raw || DEFAULT_API_KEY;
 }
 
 // ===================== MouseMove =====================
@@ -76,11 +85,15 @@ registerNode({
         if (!Number.isFinite(duration) || duration < 0) duration = 0;
 
         const baseUrl = getBaseUrl(api);
+        const apiKey = getApiKey(api);
 
         try {
             const res = await fetch(`${baseUrl}/mouse/move`, {
                 method: "POST",
-                headers: { "Content-Type": "application/json" },
+                headers: {
+                    "Content-Type": "application/json",
+                    "X-API-Key": apiKey,
+                },
                 body: JSON.stringify({ x, y, duration }),
             });
 
@@ -164,11 +177,15 @@ registerNode({
         const interval = toNumber(intervalFromInput, intervalCtrl);
 
         const baseUrl = getBaseUrl(api);
+        const apiKey = getApiKey(api);
 
         try {
             const res = await fetch(`${baseUrl}/mouse/click`, {
                 method: "POST",
-                headers: { "Content-Type": "application/json" },
+                headers: {
+                    "Content-Type": "application/json",
+                    "X-API-Key": apiKey,
+                },
                 body: JSON.stringify({ button, clicks, interval }),
             });
 
@@ -226,11 +243,15 @@ registerNode({
         const amount = toNumber(amountFromInput, amountCtrl);
 
         const baseUrl = getBaseUrl(api);
+        const apiKey = getApiKey(api);
 
         try {
             const res = await fetch(`${baseUrl}/mouse/scroll`, {
                 method: "POST",
-                headers: { "Content-Type": "application/json" },
+                headers: {
+                    "Content-Type": "application/json",
+                    "X-API-Key": apiKey,
+                },
                 body: JSON.stringify({ amount }),
             });
 

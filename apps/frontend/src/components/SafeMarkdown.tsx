@@ -31,38 +31,6 @@ function normalize(md: string | undefined | null) {
     return md.replace(/\r\n?/g, "\n");
 }
 
-/**
- * 将“内部地址”（127.0.0.1 / localhost / host.docker.internal / 9000/9001端口）
- * 的前缀改成当前页面的 origin，保留路径 + 查询参数 + hash。
- */
-function rewriteInternalUrl(url: string): string {
-    if (typeof window === "undefined") return url;
-    try {
-        const u = new URL(url, window.location.origin);
-
-        const internalHosts = ["127.0.0.1", "localhost", "host.docker.internal"];
-        const internalPorts = ["9000", "9001"];
-
-        const isInternalHost = internalHosts.includes(u.hostname);
-        const isInternalPort = internalPorts.includes(u.port);
-
-        // 只改内部地址，外网链接保持原样
-        if (!isInternalHost && !isInternalPort) return url;
-
-        const origin = window.location.origin;
-        let path = u.pathname || "/";
-
-        // 已经是 /minio/... 就不重复加
-        if (!path.startsWith("/minio/")) {
-            if (!path.startsWith("/")) path = "/" + path;
-            path = "/minio" + path; // /minio/<bucket>/...
-        }
-
-        return origin + path + u.search + u.hash;
-    } catch {
-        return url;
-    }
-}
 
 /** 基于默认 schema 的最小扩展：允许代码高亮 class（language-xxx / hljs）+ KaTeX class */
 const sanitizeSchema = {
@@ -142,61 +110,46 @@ export default function SafeMarkdown({
     }
 
     const components: Components = {
-        // 统一处理链接 href
         a({ href, children, ...props }: LinkProps) {
             const raw = typeof href === "string" ? href : "";
-            const safeHref = raw ? rewriteInternalUrl(raw) : raw;
 
-            // 把 children 拿出来，看是不是真的“只有一个文本节点”
             const childrenArray = React.Children.toArray(children);
             const isSingleTextChild =
                 childrenArray.length === 1 &&
                 typeof childrenArray[0] === "string" &&
                 childrenArray[0].trim() === raw.trim();
 
-            // ✅ 如果 href 是图片地址，并且 label 就是原始 URL，
-            //    那我们直接当成 <img> 来渲染
-            if (safeHref && isSingleTextChild && isImageUrl(safeHref)) {
-                return <img src={safeHref} alt="" />;
+            // 如果 href 本身是图片地址，并且 label 就是原始 URL → 当成图片渲染
+            if (raw && isSingleTextChild && isImageUrl(raw)) {
+                return <img src={raw} alt="" />;
             }
 
-            // 否则按普通链接处理
-            let label: React.ReactNode = children;
-
-            if (raw && safeHref && isSingleTextChild) {
-                // 如果显示文字本来就是原始 url，就一起替换成重写后的
-                label = safeHref;
-            }
-
+            // 否则按普通链接
             return (
-                <a href={safeHref} {...props}>
-                    {label}
+                <a href={raw} {...props}>
+                    {children}
                 </a>
             );
         },
 
-        // 统一处理图片 src
         img({ src, ...props }: ImgProps) {
             const raw = typeof src === "string" ? src : "";
-            const safeSrc = raw ? rewriteInternalUrl(raw) : raw;
-
-            return <img src={safeSrc} {...props} />;
+            return <img src={raw} {...props} />;
         },
 
-        // code 渲染保持原来的逻辑
         code({ inline, className, children, ...props }: CodeProps) {
             const hasSyntax =
                 /\blanguage-/.test(className || "") || /\bhljs\b/.test(className || "");
 
+            // ✅ 行内代码：只能渲染 <code>，绝对不要出现 <pre>
             if (inline) {
                 const base = "rounded-md font-mono text-[0.9em] px-1 py-0.5";
                 const fallback =
                     "bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-100";
+
                 return (
                     <code
-                        className={`${base} ${hasSyntax ? "" : fallback} ${
-                            className || ""
-                        }`}
+                        className={`${base} ${hasSyntax ? "" : fallback} ${className || ""}`}
                         {...props}
                     >
                         {children}
@@ -204,21 +157,23 @@ export default function SafeMarkdown({
                 );
             }
 
-            if (hasSyntax) {
-                return (
-                    <pre className="rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm overflow-auto p-3">
-                        <code className={className} {...props}>
-                            {children}
-                        </code>
-                    </pre>
-                );
-            }
+            // ✅ 代码块：这里才允许用 <pre><code>
+            const preClassWhenSyntax =
+                "rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm overflow-auto p-3";
+            const preClassPlain =
+                "rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-slate-100 p-3 shadow-sm overflow-auto whitespace-pre-wrap break-words";
+
+            const preClass = hasSyntax ? preClassWhenSyntax : preClassPlain;
+
             return (
-                <pre className="rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-slate-100 p-3 shadow-sm overflow-auto whitespace-pre-wrap break-words">
-                    <code className="font-mono">{children}</code>
+                <pre className={preClass}>
+                    <code className={className || "font-mono"} {...props}>
+                        {children}
+                    </code>
                 </pre>
             );
         },
+
     };
 
 

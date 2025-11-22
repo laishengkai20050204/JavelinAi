@@ -600,7 +600,7 @@ export default function JavelinMinimalChat() {
                         "新会话"
                         : "新会话"
                 }
-                onSave={(t) => {
+                onSave={(t: string) => {
                     if (renameId) {
                         doRename(renameId, t);
                         setRenameId(null);

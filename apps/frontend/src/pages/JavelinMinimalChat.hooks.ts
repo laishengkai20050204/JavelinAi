@@ -6,6 +6,7 @@ import { listSavedTools } from "../features/clientTools/storage";
 import { compileGraphToClientTool } from "../features/clientTools/compile";
 import type { ClientTool } from "../features/clientTools/types";
 import type { UploadFileResponse } from "../components/ChatFileUploader";
+import { localPcControlTool } from "../features/clientTools/builtin/localPcControl";
 
 // ===== 类型 ================================================================
 
@@ -375,16 +376,20 @@ export function useJavelinMinimalChat(): UseJavelinMinimalChatResult {
             const saved = listSavedTools();
             const compiled: ClientTool[] = [];
             for (const b of saved) {
-                compiled.push(
-                    await compileGraphToClientTool(b.graph, {
-                        name: b.meta.name,
-                        description: b.meta.description,
-                    }),
-                );
+                const tool = await compileGraphToClientTool(b.graph, {
+                    name: b.meta.name,
+                    description: b.meta.description,
+                });
+                if (tool) {
+                    compiled.push(tool);
+                }
             }
-            setClientTools(compiled);
+
+            // 把本机控制工具放在最前面，其它是 Rete 编译出来的工具
+            setClientTools([localPcControlTool, ...compiled]);
         })();
     }, []);
+
 
     // ===== Effect: 加载工具开关状态 =====
     useEffect(() => {
