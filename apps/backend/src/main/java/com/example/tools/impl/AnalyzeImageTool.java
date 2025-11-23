@@ -9,7 +9,6 @@ import com.example.file.service.AiFileService;
 import com.example.storage.StorageService;
 import com.example.storage.impl.MinioStorageService;
 import com.example.tools.AiTool;
-import com.example.tools.support.GridLocalizationPipeline;
 import com.example.tools.support.ImageCacheManager;
 import com.example.tools.support.ProxySupport;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -36,9 +35,10 @@ import java.util.*;
  * analyze_image 工具：
  *
  * - 从 MinIO 读取用户上传的图片，做基础信息解析（宽/高等）；
- * - 使用预设的 Gemini 多模态模型（ai.multi.models.gemini-vision）直接调用 OpenAI 兼容接口，
+ * - 使用预设的多模态模型（ai.multi.models.gemini-vision / qwen-vision 等）调用 OpenAI 兼容接口，
  *   生成概要/详细/原文/tags 等描述信息；
- * - 不再通过 PythonExecTool + Qwen-VL，而是直接在 Java 里用 WebClient 调 Gemini。
+ * - 在 coordinate_mode=true 时，使用整张图片的像素坐标做二分搜索（先按 Y 再按 X），
+ *   直接得到点击点 (click_x, click_y)，不再使用网格行列或 GridLocalizationPipeline。
  */
 @Slf4j
 @AiToolComponent
@@ -51,33 +51,18 @@ public class AnalyzeImageTool implements AiTool {
     private final AiMultiModelProperties multiModelProperties;
     private final EffectiveProps effectiveProps;
     private final WebClient.Builder webClientBuilder;
-    private static final int DEFAULT_GRID_ROWS = 15;
-    private static final int DEFAULT_GRID_COLS = 20;
-    // 坐标模式内部最大尝试次数（行/列各自）
+    private final ImageCacheManager imageCacheManager;
+
+    /**
+     * 像素坐标二分搜索：最小区间大小（像素），当区间长度 <= 该值时停止二分。
+     */
+    private static final int MIN_COORDINATE_SPAN_PX = 50;
+
+    /**
+     * 二分搜索最大迭代次数（Y 方向 / X 方向）。
+     */
     private static final int MAX_ROW_ATTEMPTS = 15;
     private static final int MAX_COL_ATTEMPTS = 20;
-
-    private final ImageCacheManager imageCacheManager;
-    private GridLocalizationPipeline pipeline;
-
-    @PostConstruct
-    public void init() {
-        log.info("[AnalyzeImageTool] Initializing with {} threads for grid localization pipeline", 4);
-        // 初始化并发处理器（4个线程）
-        this.pipeline = new GridLocalizationPipeline(4);
-        log.info("[AnalyzeImageTool] Initialization completed. Vision profile: {}, Grid size: {}x{}",
-                VISION_PROFILE, DEFAULT_GRID_ROWS, DEFAULT_GRID_COLS);
-    }
-
-    @PreDestroy
-    public void destroy() {
-        log.info("[AnalyzeImageTool] Shutting down grid localization pipeline...");
-        if (pipeline != null) {
-            pipeline.shutdown();
-        }
-        log.info("[AnalyzeImageTool] Shutdown completed");
-    }
-
 
     /**
      * 默认使用的视觉 profile 名（在 ai.multi.models.* 中配置）。
@@ -105,8 +90,8 @@ public class AnalyzeImageTool implements AiTool {
     private final boolean visionEnable = true;
 
     /**
-     * 给视觉模型的默认提示词。
-     * 要求模型按照 四行 固定格式输出，以便后续解析。
+     * 给视觉模型的默认提示词（caption 模式用）。
+     * 要求模型按照四行固定格式输出，以便后续解析。
      */
     private static final String DEFAULT_VISION_PROMPT = """
             请分四部分用中文和英文输出本图片的信息，严格按照下面格式：
@@ -116,6 +101,16 @@ public class AnalyzeImageTool implements AiTool {
             4) 第四行以"tags: "开头，给出若干英文标签，用逗号分隔，例如：tags: math, formula, fourier, signal-processing。
             """;
 
+    @PostConstruct
+    public void init() {
+        log.info("[AnalyzeImageTool] Initializing. coordinate_mode will use pixel-level binary search (Y then X).");
+    }
+
+    @PreDestroy
+    public void destroy() {
+        log.info("[AnalyzeImageTool] AnalyzeImageTool destroy called");
+    }
+
     @Override
     public String name() {
         return "analyze_image";
@@ -123,9 +118,8 @@ public class AnalyzeImageTool implements AiTool {
 
     @Override
     public String description() {
-        return "Analyze a user-uploaded image: return basic metadata, captions, and (optionally) a grid-based click coordinate for UI automation.";
+        return "Analyze a user-uploaded image: return basic metadata, captions, and (optionally) a pixel-level click coordinate for UI automation.";
     }
-
 
     @Override
     public Map<String, Object> parametersSchema() {
@@ -145,11 +139,11 @@ public class AnalyzeImageTool implements AiTool {
                         + "The main LLM should summarize the user question and specify what to focus on in this image."
         ));
 
-        // ✅ 新增：是否开启"网格坐标模式"
+        // 坐标模式：像素二分搜索
         props.put("coordinate_mode", Map.of(
                 "type", "boolean",
-                "description", "If true, use grid-based coordinate mode: the vision model will be asked to locate a target UI element "
-                        + "in a grid (grid_rows × grid_cols) and output row/col, which will be converted to pixel coordinates.",
+                "description", "If true, use pixel-level coordinate mode: the vision model will be used in a Y-then-X binary search "
+                        + "over the full image to directly produce click_x and click_y.",
                 "default", false
         ));
 
@@ -181,7 +175,7 @@ public class AnalyzeImageTool implements AiTool {
             }
         }
 
-        // ✅ 新增：是否开启坐标模式
+        // 是否开启坐标模式（像素二分）
         boolean coordinateMode = false;
         Object cmObj = args.get("coordinate_mode");
         if (cmObj instanceof Boolean b) {
@@ -190,8 +184,6 @@ public class AnalyzeImageTool implements AiTool {
             coordinateMode = Boolean.parseBoolean(cmObj.toString());
         }
         log.info("[analyze_image] Coordinate mode: {}", coordinateMode);
-
-
 
         if (!StringUtils.hasText(fileId)) {
             String msg = "Missing required parameter 'file_id'.";
@@ -291,10 +283,10 @@ public class AnalyzeImageTool implements AiTool {
             analysis.put("message", "Failed to read image from storage: " + e.getMessage());
         }
 
-        // 4) 调用 Gemini 视觉模型（OpenAI 兼容接口）
+        // 4) 视觉模型处理
         if (visionEnable && isImage) {
             log.info("[analyze_image] Vision processing enabled. Building image reference...");
-            String imageUrl = buildImageRef(f); // 预签名
+            String imageUrl = buildImageRef(f); // 预签名或 data:base64
             if (!StringUtils.hasText(imageUrl)) {
                 log.warn("[analyze_image] Failed to build image reference (url/base64)");
                 analysis.put("vision_error", "failed to build image reference (url/base64), skip vision");
@@ -302,31 +294,31 @@ public class AnalyzeImageTool implements AiTool {
                 log.debug("[analyze_image] Image reference built successfully (length={})", imageUrl.length());
 
                 if (coordinateMode) {
-                    log.info("[analyze_image] ===== Entering COORDINATE MODE ===== grid={}x{}",
-                            DEFAULT_GRID_ROWS, DEFAULT_GRID_COLS);
+                    // ===== 像素二分坐标模式 =====
+                    log.info("[analyze_image] ===== Entering COORDINATE MODE (pixel-level binary search) =====");
                     try {
                         long coordStartTime = System.currentTimeMillis();
-                        // 🔥 使用并发流水线处理
-                        Map<String, Object> gridResult = findCoordinatesConcurrently(
-                                f, userId, conversationId, imageUrl, visionPrompt, width, height
+
+                        Map<String, Object> coordResult = findCoordinatesByBinarySearch(
+                                f, userId, conversationId, visionPrompt, width, height
                         );
-                        analysis.putAll(gridResult);
+
+                        analysis.putAll(coordResult);
                         long coordTime = System.currentTimeMillis() - coordStartTime;
-                        log.info("[analyze_image] Coordinate mode completed in {}ms. Result: row={}, col={}, x={}, y={}",
+                        log.info("[analyze_image] Coordinate mode (binary search) completed in {}ms. click=({}, {})",
                                 coordTime,
-                                gridResult.get("grid_row"),
-                                gridResult.get("grid_col"),
-                                gridResult.get("click_x"),
-                                gridResult.get("click_y"));
+                                coordResult.get("click_x"),
+                                coordResult.get("click_y"));
 
                     } catch (Exception e) {
-                        log.error("[analyze_image] Concurrent grid localization failed", e);
-                        analysis.put("grid_error", "Concurrent processing failed: " + e.getMessage());
+                        log.error("[analyze_image] Pixel-level coordinate localization failed", e);
+                        analysis.put("grid_error", "Pixel-level binary search failed: " + e.getMessage());
                     }
+
                 } else {
+                    // ===== 普通 caption 模式 =====
                     log.info("[analyze_image] ===== Entering CAPTION MODE =====");
                     long captionStartTime = System.currentTimeMillis();
-                    // ✅ 非坐标模式：保持原来的 caption / 原文 / tags 行为
                     Map<String, Object> vision = callVision(
                             userId, conversationId, imageUrl, visionPrompt
                     );
@@ -348,9 +340,6 @@ public class AnalyzeImageTool implements AiTool {
                 log.info("[analyze_image] File is not a valid image, skipping vision processing");
             }
         }
-
-
-
 
         // 5) 组装 data
         log.debug("[analyze_image] Assembling final result...");
@@ -375,60 +364,50 @@ public class AnalyzeImageTool implements AiTool {
             sb.append("Image '").append(filename).append("' is ")
                     .append(width).append("×").append(height).append(" pixels.");
 
-            // ✅ 新增：坐标模式结果
             if (coordinateMode) {
-                Object gridRowObj = analysis.get("grid_row");
-                Object gridColObj = analysis.get("grid_col");
+                // 坐标模式：像素二分搜索结果
                 Object clickXObj = analysis.get("click_x");
                 Object clickYObj = analysis.get("click_y");
-                Object gridErrorObj = analysis.get("grid_error");
+                Object coordErrorObj = analysis.get("grid_error");
 
-                if (gridErrorObj != null) {
+                if (coordErrorObj != null) {
                     // 定位失败
-                    sb.append("\n\n⚠️ Coordinate localization failed: ").append(gridErrorObj);
+                    sb.append("\n\n⚠️ Coordinate localization (binary search) failed: ").append(coordErrorObj);
 
-                    // 添加部分成功的信息
-                    if (gridRowObj != null) {
-                        sb.append("\n- Row found: ").append(gridRowObj);
-                        sb.append(" (out of ").append(analysis.get("grid_rows")).append(" rows)");
+                    Object yLow = analysis.get("search_y_low");
+                    Object yHigh = analysis.get("search_y_high");
+                    Object xLow = analysis.get("search_x_low");
+                    Object xHigh = analysis.get("search_x_high");
+
+                    if (yLow != null && yHigh != null) {
+                        sb.append("\n- Final Y range: [").append(yLow).append(", ").append(yHigh).append("]");
+                    }
+                    if (xLow != null && xHigh != null) {
+                        sb.append("\n- Final X range: [").append(xLow).append(", ").append(xHigh).append("]");
                     }
 
-                    Object bannedColsObj = analysis.get("banned_cols");
-                    if (bannedColsObj instanceof List bannedCols && !bannedCols.isEmpty()) {
-                        sb.append("\n- Attempted columns: ").append(bannedCols);
-                    }
-
-                } else if (gridRowObj != null && gridColObj != null && clickXObj != null && clickYObj != null) {
+                } else if (clickXObj != null && clickYObj != null) {
                     // 定位成功
-                    sb.append("\n\n✅ Coordinate localization successful:");
-                    sb.append("\n- Grid position: Row ").append(gridRowObj)
-                            .append(", Column ").append(gridColObj);
-                    sb.append(" (Grid size: ")
-                            .append(analysis.get("grid_rows")).append("×")
-                            .append(analysis.get("grid_cols")).append(")");
+                    sb.append("\n\n✅ Coordinate localization successful (pixel-level binary search):");
                     sb.append("\n- Pixel coordinates: (")
                             .append(clickXObj).append(", ").append(clickYObj).append(")");
 
-                    // 可选：添加确认信息
-                    Boolean rowContains = (Boolean) analysis.get("row_contains_target");
-                    Boolean colContains = (Boolean) analysis.get("col_contains_target");
-                    if (Boolean.TRUE.equals(rowContains) && Boolean.TRUE.equals(colContains)) {
-                        sb.append("\n- Verification: Target confirmed in grid cell");
+                    Object ySteps = analysis.get("search_y_steps");
+                    Object xSteps = analysis.get("search_x_steps");
+                    if (ySteps != null || xSteps != null) {
+                        sb.append("\n- Search steps: ");
+                        if (ySteps != null) {
+                            sb.append("Y=").append(ySteps);
+                        }
+                        if (xSteps != null) {
+                            if (ySteps != null) sb.append(", ");
+                            sb.append("X=").append(xSteps);
+                        }
                     }
 
-                    // 可选：添加搜索统计
-                    Object bannedRowsObj = analysis.get("banned_rows");
-                    Object bannedColsObj = analysis.get("banned_cols");
-                    int rowAttempts = bannedRowsObj instanceof List ? ((List<?>) bannedRowsObj).size() + 1 : 1;
-                    int colAttempts = bannedColsObj instanceof List ? ((List<?>) bannedColsObj).size() + 1 : 1;
-                    if (rowAttempts > 1 || colAttempts > 1) {
-                        sb.append("\n- Search attempts: ")
-                                .append(rowAttempts).append(" row(s), ")
-                                .append(colAttempts).append(" column(s)");
-                    }
                 } else {
                     // 数据不完整
-                    sb.append("\n\n⚠️ Coordinate data incomplete");
+                    sb.append("\n\n⚠️ Coordinate data incomplete (missing click_x / click_y)");
                 }
 
             } else {
@@ -472,10 +451,10 @@ public class AnalyzeImageTool implements AiTool {
         data.put("summary", summary);
         data.put("text", summary);
 
-        // ✅ 新增：坐标模式失败时返回 ERROR
-        if (coordinateMode && analysis.containsKey("grid_error")) {
-            log.error("[analyze_image] Coordinate mode failed: {}", analysis.get("grid_error"));
-            return ToolResult.error(null, name(), summary);  // 返回 ERROR，不会被缓存
+        // 坐标模式失败时返回 ERROR（避免缓存错误结果）
+        if (coordinateMode && analysis.containsKey("coordinate_error")) {
+            log.error("[analyze_image] Coordinate mode failed: {}", analysis.get("coordinate_error"));
+            return ToolResult.error(null, name(), summary);
         }
 
         long totalTime = System.currentTimeMillis() - startTime;
@@ -485,6 +464,9 @@ public class AnalyzeImageTool implements AiTool {
         return ToolResult.success(null, name(), false, data);
     }
 
+    /**
+     * 构造图片引用（优先预签名 URL，失败再退回 data:base64）。
+     */
     private String buildImageRef(AiFile f) {
         log.debug("[analyze_image] Building image reference for fileId={}", f.getId());
 
@@ -507,21 +489,19 @@ public class AnalyzeImageTool implements AiTool {
     }
 
     /**
-     * 为图片生成一个 MinIO 预签名 URL，给上游 Gemini 使用。
+     * 为图片生成一个 MinIO 预签名 URL，给上游视觉模型使用。
      * 注意：要求 MinIO 对外网可达，否则上游服务下载会失败。
      */
     private String buildImageUrl(AiFile f) {
         try {
             if (storageService instanceof MinioStorageService minio) {
                 log.debug("[analyze_image] Using MinioStorageService to build public URL");
-                // 优先使用对外暴露域名 + /minio 规则
                 String url = minio.buildPublicReadUrl(f.getBucket(), f.getObjectKey());
                 log.debug("[analyze_image] MinIO public URL generated: {}", url);
                 return url;
             }
 
             log.debug("[analyze_image] Using generic StorageService presignGet");
-            // 如果以后 StorageService 换了实现，就简单 fallback 到 presignGet
             return storageService.presignGet(
                     f.getBucket(),
                     f.getObjectKey(),
@@ -533,14 +513,78 @@ public class AnalyzeImageTool implements AiTool {
         }
     }
 
+    /**
+     * 把 MinIO 里的图片读出来，转成 data:[mime];base64,xxxx 形式。
+     * 为安全起见限制最大 4MB。
+     */
+    private String buildDataUrl(AiFile f) {
+        long size = Optional.ofNullable(f.getSizeBytes()).orElse(0L);
+        long MAX_INLINE = 4L * 1024 * 1024; // 4MB
 
+        log.debug("[analyze_image] buildDataUrl: fileId={}, size={} bytes", f.getId(), size);
 
+        if (size <= 0 || size > MAX_INLINE) {
+            log.warn("[analyze_image] File too large for inline data url: {} bytes (max={}MB)",
+                    size, MAX_INLINE / (1024 * 1024));
+            return null;
+        }
+
+        String mimeType = Optional.ofNullable(f.getMimeType()).orElse("image/png");
+
+        try {
+            log.debug("[analyze_image] Reading file content from storage...");
+            long readStartTime = System.currentTimeMillis();
+
+            byte[] bytes = storageService.withObject(
+                    f.getBucket(),
+                    f.getObjectKey(),
+                    (InputStream in) -> {
+                        ByteArrayOutputStream bos = new ByteArrayOutputStream();
+                        byte[] buf = new byte[8192];
+                        int len;
+                        while (true) {
+                            try {
+                                len = in.read(buf);
+                                if (len == -1) break;
+                                bos.write(buf, 0, len);
+                            } catch (IOException e) {
+                                log.error("[analyze_image] Error reading file stream", e);
+                                break;
+                            }
+                        }
+                        return bos.toByteArray();
+                    }
+            ).block(Duration.ofSeconds(20));
+
+            long readTime = System.currentTimeMillis() - readStartTime;
+
+            if (bytes == null || bytes.length == 0) {
+                log.warn("[analyze_image] buildDataUrl: empty bytes for fileId={}", f.getId());
+                return null;
+            }
+
+            log.debug("[analyze_image] File read completed in {}ms, encoding to base64...", readTime);
+            long encodeStartTime = System.currentTimeMillis();
+
+            String base64 = Base64.getEncoder().encodeToString(bytes);
+            String dataUrl = "data:" + mimeType + ";base64," + base64;
+
+            long encodeTime = System.currentTimeMillis() - encodeStartTime;
+            log.info("[analyze_image] Base64 encoding completed in {}ms. DataURL length={}",
+                    encodeTime, dataUrl.length());
+
+            return dataUrl;
+        } catch (Exception e) {
+            log.error("[analyze_image] buildDataUrl failed for fileId={}", f.getId(), e);
+            return null;
+        }
+    }
 
     /**
-     * 使用 WebClient 调用 Gemini（或其他 OpenAI 兼容视觉模型）。
+     * 使用 WebClient 调用视觉模型（OpenAI 兼容接口）。
      *
-     * - 优先从 ai.multi.models.gemini-vision 读取 baseUrl / apiKey / modelId；
-     * - 如果找不到 profile 或 apiKey 为空，可按需扩展为从环境变量 GEMINI_API_KEY 读取；
+     * - 优先从 ai.multi.models.VISION_PROFILE 读取 baseUrl / apiKey / modelId；
+     * - 如果找不到 profile 或 apiKey 为空，可从环境变量 GEMINI_API_KEY 兜底；
      * - 请求体采用 OpenAI Chat Completions + image_url 格式。
      */
     private Map<String, Object> callVision(
@@ -605,7 +649,7 @@ public class AnalyzeImageTool implements AiTool {
         }
 
         if (!StringUtils.hasText(apiKey)) {
-            String msg = "Gemini vision API key is not configured (ai.multi.models."
+            String msg = "Vision API key is not configured (ai.multi.models."
                     + VISION_PROFILE + ".api-key or GEMINI_API_KEY).";
             log.error("[analyze_image] {}", msg);
             return Map.of("vision_error", msg);
@@ -672,14 +716,14 @@ public class AnalyzeImageTool implements AiTool {
 
             if (root == null) {
                 log.warn("[analyze_image] Vision API returned null response");
-                return Map.of("vision_error", "Empty response from Gemini vision API");
+                return Map.of("vision_error", "Empty response from vision API");
             }
 
             log.debug("[analyze_image] Parsing vision API response...");
             JsonNode choices = root.path("choices");
             if (!choices.isArray() || choices.isEmpty()) {
                 log.warn("[analyze_image] No choices in vision API response");
-                return Map.of("vision_error", "No choices in Gemini vision response");
+                return Map.of("vision_error", "No choices in vision response");
             }
 
             JsonNode first = choices.get(0);
@@ -704,7 +748,7 @@ public class AnalyzeImageTool implements AiTool {
 
             if (!StringUtils.hasText(text)) {
                 log.warn("[analyze_image] Vision API returned empty content");
-                return Map.of("vision_error", "Gemini vision returned empty content");
+                return Map.of("vision_error", "Vision model returned empty content");
             }
 
             log.info("[analyze_image] Vision API returned text (length={})", text.length());
@@ -725,7 +769,7 @@ public class AnalyzeImageTool implements AiTool {
             return parsed;
 
         } catch (WebClientResponseException wex) {
-            String msg = "Gemini HTTP " + wex.getRawStatusCode() + ": " + wex.getResponseBodyAsString();
+            String msg = "Vision HTTP " + wex.getRawStatusCode() + ": " + wex.getResponseBodyAsString();
             log.error("[analyze_image] Vision API HTTP error: status={}, body={}",
                     wex.getRawStatusCode(), wex.getResponseBodyAsString());
             return Map.of("vision_error", msg);
@@ -736,7 +780,7 @@ public class AnalyzeImageTool implements AiTool {
     }
 
     /**
-     * 解析模型按照固定格式返回的四行文本。
+     * 解析模型按照固定格式返回的四行文本（caption 模式）。
      */
     private Map<String, Object> parseVisionText(String text) {
         log.debug("[analyze_image] Parsing vision text (length={})", text.length());
@@ -823,78 +867,10 @@ public class AnalyzeImageTool implements AiTool {
     }
 
     /**
-     * 把 MinIO 里的图片读出来，转成 data:[mime];base64,xxxx 形式。
-     * 这里为了安全，限制最大 4MB（可按需调大），避免超大图直接塞进请求。
-     */
-    private String buildDataUrl(AiFile f) {
-        long size = Optional.ofNullable(f.getSizeBytes()).orElse(0L);
-        long MAX_INLINE = 4L * 1024 * 1024; // 4MB
-
-        log.debug("[analyze_image] buildDataUrl: fileId={}, size={} bytes", f.getId(), size);
-
-        if (size <= 0 || size > MAX_INLINE) {
-            log.warn("[analyze_image] File too large for inline data url: {} bytes (max={}MB)",
-                    size, MAX_INLINE / (1024 * 1024));
-            return null;
-        }
-
-        String mimeType = Optional.ofNullable(f.getMimeType()).orElse("image/png");
-
-        try {
-            log.debug("[analyze_image] Reading file content from storage...");
-            long readStartTime = System.currentTimeMillis();
-
-            byte[] bytes = storageService.withObject(
-                    f.getBucket(),
-                    f.getObjectKey(),
-                    (InputStream in) -> {
-                        ByteArrayOutputStream bos = new ByteArrayOutputStream();
-                        byte[] buf = new byte[8192];
-                        int len;
-                        while (true) {
-                            try {
-                                len = in.read(buf);
-                                if (len == -1) break;
-                                bos.write(buf, 0, len);
-                            } catch (IOException e) {
-                                log.error("[analyze_image] Error reading file stream", e);
-                                break;
-                            }
-                        }
-                        return bos.toByteArray();
-                    }
-            ).block(Duration.ofSeconds(20));
-
-            long readTime = System.currentTimeMillis() - readStartTime;
-
-            if (bytes == null || bytes.length == 0) {
-                log.warn("[analyze_image] buildDataUrl: empty bytes for fileId={}", f.getId());
-                return null;
-            }
-
-            log.debug("[analyze_image] File read completed in {}ms, encoding to base64...", readTime);
-            long encodeStartTime = System.currentTimeMillis();
-
-            String base64 = Base64.getEncoder().encodeToString(bytes);
-            String dataUrl = "data:" + mimeType + ";base64," + base64;
-
-            long encodeTime = System.currentTimeMillis() - encodeStartTime;
-            log.info("[analyze_image] Base64 encoding completed in {}ms. DataURL length={}",
-                    encodeTime, dataUrl.length());
-
-            return dataUrl;
-        } catch (Exception e) {
-            log.error("[analyze_image] buildDataUrl failed for fileId={}", f.getId(), e);
-            return null;
-        }
-    }
-
-
-    /**
      * 规范化 baseUrl：
-     * - 去掉末尾多余的 /
-     * - 如果是类似 https://api.xxx.com，则自动补成 https://api.xxx.com/v1
-     * - 如果已经以 /v1 结尾，则不再追加
+     * - 去掉末尾多余的 /；
+     * - 如果是类似 https://api.xxx.com，则自动补成 https://api.xxx.com/v1；
+     * - 如果已经以 /v1 结尾，则不再追加。
      */
     private String normalizeBaseUrl(String baseUrl) {
         if (!StringUtils.hasText(baseUrl)) {
@@ -912,290 +888,8 @@ public class AnalyzeImageTool implements AiTool {
         return normalized;
     }
 
-    /** 行选择 prompt：支持禁选若干行 */
-    private String buildRowPrompt(String visionPrompt, int gridRows, Set<Integer> bannedRows) {
-        String targetDesc = StringUtils.hasText(visionPrompt)
-                ? visionPrompt
-                : "你要点击或定位的目标界面元素（例如某个按钮、输入框或图标）";
-
-        String bannedText = "";
-        if (bannedRows != null && !bannedRows.isEmpty()) {
-            bannedText = "注意：下面这些行已经被确认不包含目标元素，请不要再选择它们："
-                    + bannedRows + "。\n";
-        }
-
-        return """
-            你将看到一张电脑屏幕的截屏图片。
-
-            请在心里把整张图片从上到下平均分成 %d 行：
-            - 行索引从 0 到 %d，0 在最上方，%d 在最下方。
-
-            %s目标界面元素是：
-            %s
-
-            你的任务是：在所有可能的行中，选择【最有可能】包含该目标元素"中心位置"的那一行。
-
-            ⚠️ 输出要求非常严格：
-            - 必须只输出一个 JSON 对象，不能有任何多余文字、解释或注释；
-            - JSON 格式必须严格为：
-              {"row": <行索引整数>}
-
-            示例：
-            {"row": 7}
-            """.formatted(
-                gridRows, gridRows - 1, gridRows - 1,
-                bannedText,
-                targetDesc
-        );
-    }
-
-    // 兼容旧调用
-    private String buildColPrompt(String visionPrompt, int gridCols, Integer rowIndex) {
-        return buildColPrompt(visionPrompt, gridCols, rowIndex, Collections.emptySet());
-    }
-
-    /** 列选择 prompt：支持禁选若干列 */
-    private String buildColPrompt(String visionPrompt, int gridCols, Integer rowIndex, Set<Integer> bannedCols) {
-        String targetDesc = StringUtils.hasText(visionPrompt)
-                ? visionPrompt
-                : "你要点击或定位的目标界面元素（例如某个按钮、输入框或图标）";
-
-        String rowHint = "";
-        if (rowIndex != null && rowIndex >= 0) {
-            rowHint = "你可以假设目标元素大致位于第 row = " + rowIndex
-                    + " 行所在的水平带状区域内。\n";
-        }
-
-        String bannedText = "";
-        if (bannedCols != null && !bannedCols.isEmpty()) {
-            bannedText = "注意：下面这些列已经被确认不包含目标元素，请不要再选择它们："
-                    + bannedCols + "。\n";
-        }
-
-        return """
-            你将看到一张电脑屏幕的截屏图片。
-
-            请在心里把整张图片从左到右平均分成 %d 列：
-            - 列索引从 0 到 %d，0 在最左侧，%d 在最右侧。
-
-            %s%s目标界面元素是：
-            %s
-
-            你的任务是：在所有可能的列中，选择【最有可能】包含该目标元素"中心位置"的那一列。
-
-            ⚠️ 输出要求非常严格：
-            - 必须只输出一个 JSON 对象，不能有任何多余文字、解释或注释；
-            - JSON 格式必须严格为：
-              {"col": <列索引整数>}
-
-            示例：
-            {"col": 12}
-            """.formatted(
-                gridCols, gridCols - 1, gridCols - 1,
-                rowHint,
-                bannedText,
-                targetDesc
-        );
-    }
-
-
-    /**
-     * 从模型 raw 文本中解析某个字段（"row" 或 "col"）的整数值。
-     * 期望 raw 形如：{"row": 7} 或 {"col": 12}
-     */
-    private Integer parseIndexFromRaw(String raw, String fieldName) {
-        if (!StringUtils.hasText(raw)) {
-            log.debug("[analyze_image] parseIndexFromRaw: raw text is empty for field '{}'", fieldName);
-            return null;
-        }
-        try {
-            JsonNode node = objectMapper.readTree(raw);
-            if (node.has(fieldName)) {
-                int v = node.get(fieldName).asInt(-1);
-                if (v >= 0) {
-                    log.debug("[analyze_image] Parsed {}={} from raw", fieldName, v);
-                    return v;
-                }
-            }
-            log.warn("[analyze_image] {} field missing or negative in vision raw: {}", fieldName, raw);
-            return null;
-        } catch (Exception e) {
-            log.warn("[analyze_image] Failed to parse {} JSON from vision raw: {}", fieldName, raw, e);
-            return null;
-        }
-    }
-
-    /**
-     * 组装网格结果：
-     * - 保存原始 rowRaw / colRaw
-     * - 保存解析后的 grid_row / grid_col
-     * - 计算 click_x / click_y（格子中心）
-     */
-    private Map<String, Object> buildGridResult(
-            String rowRaw,
-            String colRaw,
-            Integer rowIndex,
-            Integer colIndex,
-            int width,
-            int height,
-            int gridRows,
-            int gridCols
-    ) {
-        log.debug("[analyze_image] Building grid result: row={}, col={}, dimensions={}x{}",
-                rowIndex, colIndex, width, height);
-
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("grid_mode", true);
-        result.put("grid_rows", gridRows);
-        result.put("grid_cols", gridCols);
-        result.put("grid_row_raw", rowRaw);
-        result.put("grid_col_raw", colRaw);
-
-        if (rowIndex == null || colIndex == null) {
-            String error = "row or col index is null (rowIndex=" + rowIndex + ", colIndex=" + colIndex + ")";
-            log.warn("[analyze_image] {}", error);
-            result.put("grid_error", error);
-            return result;
-        }
-
-        int row = rowIndex;
-        int col = colIndex;
-
-        // clamp 防御
-        if (row < 0) {
-            log.warn("[analyze_image] Row index {} is negative, clamping to 0", row);
-            row = 0;
-        }
-        if (row >= gridRows) {
-            log.warn("[analyze_image] Row index {} >= gridRows {}, clamping to {}", row, gridRows, gridRows - 1);
-            row = gridRows - 1;
-        }
-        if (col < 0) {
-            log.warn("[analyze_image] Col index {} is negative, clamping to 0", col);
-            col = 0;
-        }
-        if (col >= gridCols) {
-            log.warn("[analyze_image] Col index {} >= gridCols {}, clamping to {}", col, gridCols, gridCols - 1);
-            col = gridCols - 1;
-        }
-
-        result.put("grid_row", row);
-        result.put("grid_col", col);
-
-        if (width > 0 && height > 0) {
-            double cellWidth = (double) width / gridCols;
-            double cellHeight = (double) height / gridRows;
-
-            int x = (int) Math.round((col + 0.5) * cellWidth);
-            int y = (int) Math.round((row + 0.5) * cellHeight);
-
-            log.info("[analyze_image] Calculated click coordinates: ({}, {}) from grid cell ({}, {})",
-                    x, y, row, col);
-
-            result.put("click_x", x);
-            result.put("click_y", y);
-        } else {
-            String error = "image width/height is zero, cannot compute pixel coordinates";
-            log.warn("[analyze_image] {}", error);
-            result.put("grid_error", error);
-        }
-
-        return result;
-    }
-
-    /**
-     * 行级确认：
-     *  - 已经选出了一个候选行 rowIndex（0-based，总共 gridRows 行）；
-     *  - 现在只问：这一行对应的【水平带状区域】里，目标界面元素是不是确实出现；
-     *  - 只允许输出 {"contains": true} 或 {"contains": false}。
-     */
-    private String buildRowCheckPrompt(String visionPrompt, int gridRows, int rowIndex) {
-        String targetDesc = StringUtils.hasText(visionPrompt)
-                ? visionPrompt
-                : "你要点击或定位的目标界面元素（例如某个按钮、输入框或图标）";
-
-        return """
-            你将看到一张电脑屏幕截屏的【局部图片】。
-
-            这张图片是从一整张截图中裁剪出来的：
-            - 原始截图从上到下被平均分成 %d 行；
-            - 当前这张图片只对应其中的第 row = %d 行的水平条带区域。
-
-            你的任务是：判断下面描述的目标界面元素，是否出现在这条水平条带中
-            （横向位置不限，只要出现在这条横带范围内就算"包含"）。
-
-            目标界面元素是：
-            %s
-
-            ⚠️ 输出要求非常严格：
-            - 必须只输出一个 JSON 对象，不能有任何多余文字、解释或注释；
-            - JSON 格式必须严格为：
-              {"contains": true}
-            或：
-              {"contains": false}
-            """.formatted(
-                gridRows,
-                rowIndex,
-                targetDesc
-        );
-    }
-
-    /**
-     * 列级确认（配合格子裁剪）：
-     *  - 当前图片已经是原始截图在网格 (gridRows × gridCols) 中，
-     *    row = rowIndex, col = colIndex 的那个"格子小块"；
-     *  - 现在只问：这个格子里是否出现目标界面元素？
-     *  - 只允许输出 {"contains": true} 或 {"contains": false}。
-     */
-    private String buildColCheckPrompt(
-            String visionPrompt,
-            int gridRows,
-            int gridCols,
-            int rowIndex,
-            int colIndex
-    ) {
-        String targetDesc = StringUtils.hasText(visionPrompt)
-                ? visionPrompt
-                : "你要点击或定位的目标界面元素（例如某个按钮、输入框或图标）";
-
-        return """
-            你将看到一张电脑屏幕截屏的【局部小块图片】。
-
-            这张图片是从一整张截图中裁剪出来的：
-            - 原始截图被划分为 %d 行 × %d 列的网格；
-            - 当前这张图片只对应其中的一个格子：
-              行索引 row = %d（0 在最上方，%d 在最下方），
-              列索引 col = %d（0 在最左侧，%d 在最右侧）。
-
-            你的任务是：判断下面描述的目标界面元素，是否出现在这个格子区域中。
-
-            目标界面元素是：
-            %s
-
-            ⚠️ 输出要求非常严格：
-            - 必须只输出一个 JSON 对象，不能有任何多余文字、解释或注释；
-            - JSON 格式必须严格为：
-              {"contains": true}
-            或：
-              {"contains": false}
-            """.formatted(
-                gridRows, gridCols,
-                rowIndex, gridRows - 1,
-                colIndex, gridCols - 1,
-                targetDesc
-        );
-    }
-
-
     /**
      * 从 raw 文本中解析 {"contains": true/false} 结构。
-     *
-     * 期望模型严格输出：
-     *   {"contains": true}
-     * 或：
-     *   {"contains": false}
-     *
-     * 解析失败返回 null（上层再决定要不要重试）。
      */
     private Boolean parseContainsFromRaw(String raw) {
         if (!StringUtils.hasText(raw)) {
@@ -1205,14 +899,14 @@ public class AnalyzeImageTool implements AiTool {
         try {
             JsonNode node = objectMapper.readTree(raw);
 
-            // ✅ 标准字段：contains
+            // 标准字段：contains
             if (node.has("contains")) {
                 boolean result = node.get("contains").asBoolean();
                 log.debug("[analyze_image] Parsed contains={} from raw", result);
                 return result;
             }
 
-            // （可选）兜底：有些模型可能输出 has_target / hasTarget 之类
+            // 兜底字段
             if (node.has("has_target")) {
                 boolean result = node.get("has_target").asBoolean();
                 log.debug("[analyze_image] Parsed has_target={} from raw (fallback)", result);
@@ -1233,7 +927,35 @@ public class AnalyzeImageTool implements AiTool {
     }
 
     /**
-     * 🔥 优化：使用缓存加载图像
+     * 构造“局部图片是否包含目标元素”的通用提示词。
+     */
+    private String buildContainsPrompt(String visionPrompt) {
+        String targetDesc = StringUtils.hasText(visionPrompt)
+                ? visionPrompt
+                : "你要点击或定位的目标界面元素（例如某个按钮、输入框或图标）";
+
+        return """
+            你将看到一张电脑屏幕截屏的【局部图片】。
+
+            这张图片是从一整张截图中裁剪出来的，可能包含，也可能不包含你要寻找的目标界面元素。
+
+            目标界面元素是：
+            %s
+
+            请判断该局部图片中，是否可以看到这个目标界面元素的任意部分
+            （例如按钮的一部分、图标的一部分、文字的一部分都算出现）。
+
+            ⚠️ 输出要求非常严格：
+            - 必须只输出一个 JSON 对象，不能有任何多余文字、解释或注释；
+            - JSON 格式必须严格为：
+              {"contains": true}
+            或：
+              {"contains": false}
+            """.formatted(targetDesc);
+    }
+
+    /**
+     * 使用缓存加载整张图片。
      */
     private BufferedImage loadImageWithCache(AiFile f) throws Exception {
         log.debug("[analyze_image] Loading image with cache for fileId={}", f.getId());
@@ -1253,14 +975,12 @@ public class AnalyzeImageTool implements AiTool {
                                     f.getObjectKey(),
                                     (InputStream in) -> {
                                         try {
-                                            // ✅ 在 lambda 内部 try-catch
                                             BufferedImage bufferedImage = ImageIO.read(in);
                                             if (bufferedImage == null) {
                                                 throw new IOException("ImageIO.read returned null - file is not a valid image");
                                             }
                                             return bufferedImage;
                                         } catch (IOException e) {
-                                            // ✅ 包装成 RuntimeException
                                             throw new RuntimeException("Failed to read image: " + e.getMessage(), e);
                                         }
                                     }
@@ -1276,7 +996,6 @@ public class AnalyzeImageTool implements AiTool {
 
                         } catch (Exception e) {
                             log.error("[analyze_image] Failed to load image for fileId={}", f.getId(), e);
-                            // ✅ 重新抛出，外层会捕获
                             throw new RuntimeException("Failed to load image: " + e.getMessage(), e);
                         }
                     }
@@ -1299,100 +1018,7 @@ public class AnalyzeImageTool implements AiTool {
     }
 
     /**
-     * 🔥 优化：快速裁剪横条（使用缓存的图像）
-     */
-    private String buildRowStripeDataUrl(AiFile f, int rowIndex, int gridRows) {
-        log.debug("[analyze_image] Building row stripe data URL: row={}/{}", rowIndex, gridRows);
-        long startTime = System.currentTimeMillis();
-
-        try {
-            BufferedImage img = loadImageWithCache(f);
-
-            int fullW = img.getWidth();
-            int fullH = img.getHeight();
-
-            double cellH = (double) fullH / gridRows;
-            int y = (int) Math.floor(rowIndex * cellH);
-            int h = (rowIndex == gridRows - 1) ? (fullH - y) : (int) Math.ceil(cellH);
-
-            // 边界检查
-            y = Math.max(0, Math.min(y, fullH - 1));
-            h = Math.max(1, Math.min(h, fullH - y));
-
-            log.debug("[analyze_image] Cropping row stripe: y={}, height={} from {}x{}",
-                    y, h, fullW, fullH);
-
-            BufferedImage sub = img.getSubimage(0, y, fullW, h);
-            String dataUrl = imageToDataUrl(sub);
-
-            long cropTime = System.currentTimeMillis() - startTime;
-            log.info("[analyze_image] Row stripe data URL built in {}ms (length={})",
-                    cropTime, dataUrl.length());
-
-            return dataUrl;
-
-        } catch (Exception e) {
-            log.warn("[analyze_image] buildRowStripeDataUrl failed for rowIndex={}", rowIndex, e);
-            return null;  // 返回 null，让调用方降级到全图
-        }
-    }
-
-    /**
-     * 🔥 优化：快速裁剪格子（使用缓存的图像）
-     */
-    private String buildCellPatchDataUrl(
-            AiFile f, int rowIndex, int colIndex, int gridRows, int gridCols
-    ) {
-        log.debug("[analyze_image] Building cell patch data URL: cell=({}, {}) in {}x{} grid",
-                rowIndex, colIndex, gridRows, gridCols);
-        long startTime = System.currentTimeMillis();
-
-        try {
-            BufferedImage img = loadImageWithCache(f);
-            if (img == null) {
-                log.warn("[analyze_image] loadImageWithCache returned null");
-                return null;
-            }
-
-            int fullW = img.getWidth();
-            int fullH = img.getHeight();
-
-            double cellH = (double) fullH / gridRows;
-            double cellW = (double) fullW / gridCols;
-
-            int y = (int) Math.floor(rowIndex * cellH);
-            int x = (int) Math.floor(colIndex * cellW);
-
-            int h = (rowIndex == gridRows - 1) ? (fullH - y) : (int) Math.ceil(cellH);
-            int w = (colIndex == gridCols - 1) ? (fullW - x) : (int) Math.ceil(cellW);
-
-            // 边界检查
-            y = Math.max(0, Math.min(y, fullH - 1));
-            x = Math.max(0, Math.min(x, fullW - 1));
-            h = Math.max(1, Math.min(h, fullH - y));
-            w = Math.max(1, Math.min(w, fullW - x));
-
-            log.debug("[analyze_image] Cropping cell patch: x={}, y={}, width={}, height={} from {}x{}",
-                    x, y, w, h, fullW, fullH);
-
-            BufferedImage sub = img.getSubimage(x, y, w, h);
-            String dataUrl = imageToDataUrl(sub);
-
-            long cropTime = System.currentTimeMillis() - startTime;
-            log.info("[analyze_image] Cell patch data URL built in {}ms (length={})",
-                    cropTime, dataUrl.length());
-
-            return dataUrl;
-
-        } catch (Exception e) {
-            log.warn("[analyze_image] buildCellPatchDataUrl failed for cell=({}, {})",
-                    rowIndex, colIndex, e);
-            return null;
-        }
-    }
-
-    /**
-     * 🔥 工具方法：BufferedImage 转 Data URL
+     * BufferedImage 转 data:image/png;base64,...。
      */
     private String imageToDataUrl(BufferedImage img) throws IOException {
         log.debug("[analyze_image] Converting BufferedImage to data URL: {}x{}",
@@ -1409,148 +1035,269 @@ public class AnalyzeImageTool implements AiTool {
     }
 
     /**
-     * 🔥 并发坐标定位入口
+     * 将原图的任意矩形区域裁剪成 data:image/png;base64,... 形式。
      */
-    private Map<String, Object> findCoordinatesConcurrently(
+    private String buildRectDataUrl(BufferedImage img, int x, int y, int w, int h) {
+        if (img == null) {
+            log.warn("[analyze_image] buildRectDataUrl: image is null");
+            return null;
+        }
+
+        int fullW = img.getWidth();
+        int fullH = img.getHeight();
+
+        if (fullW <= 0 || fullH <= 0) {
+            log.warn("[analyze_image] buildRectDataUrl: invalid image size {}x{}", fullW, fullH);
+            return null;
+        }
+
+        // 边界裁剪
+        x = Math.max(0, x);
+        y = Math.max(0, y);
+        if (x >= fullW || y >= fullH) {
+            log.warn("[analyze_image] buildRectDataUrl: rect origin ({}, {}) outside image {}x{}", x, y, fullW, fullH);
+            return null;
+        }
+
+        if (w <= 0) {
+            w = fullW - x;
+        }
+        if (h <= 0) {
+            h = fullH - y;
+        }
+
+        if (x + w > fullW) {
+            w = fullW - x;
+        }
+        if (y + h > fullH) {
+            h = fullH - y;
+        }
+
+        if (w <= 0 || h <= 0) {
+            log.warn("[analyze_image] buildRectDataUrl: non-positive rect size w={}, h={}", w, h);
+            return null;
+        }
+
+        try {
+            BufferedImage sub = img.getSubimage(x, y, w, h);
+            return imageToDataUrl(sub);
+        } catch (Exception e) {
+            log.error("[analyze_image] buildRectDataUrl failed: x={}, y={}, w={}, h={}", x, y, w, h, e);
+            return null;
+        }
+    }
+
+    /**
+     * 使用像素坐标做二分搜索（先按 Y，再按 X）来定位点击点：
+     *  - Y 方向：在 [0, height) 区间二分，直到区间长度 <= MIN_COORDINATE_SPAN_PX；
+     *  - X 方向：在 [0, width) 区间二分，限制在上一步得到的纵向带状区域内；
+     *  - 每一步用局部裁剪图 + {"contains": true/false} 判断。
+     */
+    private Map<String, Object> findCoordinatesByBinarySearch(
             AiFile f,
             String userId,
             String conversationId,
-            String imageUrl,
             String visionPrompt,
             int width,
             int height
     ) throws Exception {
 
-        log.info("[analyze_image] ===== Starting concurrent coordinate localization =====");
-        long totalStartTime = System.currentTimeMillis();
+        log.info("[analyze_image] ===== Starting pixel-level binary search localization =====");
 
-        int gridRows = DEFAULT_GRID_ROWS;
-        int gridCols = DEFAULT_GRID_COLS;
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("coordinate_mode", true);
 
-        // ========== 阶段1：并发行定位 ==========
-        log.info("[analyze_image] Phase 1: Finding row with {} max attempts...", MAX_ROW_ATTEMPTS);
-        long rowStartTime = System.currentTimeMillis();
-
-        GridLocalizationPipeline.RowResult rowResult = pipeline.findRowConcurrently(
-                gridRows,
-                MAX_ROW_ATTEMPTS,
-                // 行选择器
-                (bannedRows) -> {
-                    log.debug("[analyze_image] Row selector called with bannedRows={}", bannedRows);
-                    String prompt = buildRowPrompt(visionPrompt, gridRows, bannedRows);
-                    Map<String, Object> vision = callVision(userId, conversationId, imageUrl, prompt);
-                    String raw = vision != null ? Objects.toString(vision.get("raw"), null) : null;
-                    Integer row = parseIndexFromRaw(raw, "row");
-                    log.info("[analyze_image] Row selector returned: row={}, bannedRows={}", row, bannedRows);
-                    return new GridLocalizationPipeline.SelectResult(row, null, raw);
-                },
-                // 行确认器
-                (rowIndex) -> {
-                    log.debug("[analyze_image] Row checker called for rowIndex={}", rowIndex);
-                    try {
-                        String rowImageUrl = buildRowStripeDataUrl(f, rowIndex, gridRows);
-                        String checkImageUrl = rowImageUrl != null ? rowImageUrl : imageUrl;
-                        String prompt = buildRowCheckPrompt(visionPrompt, gridRows, rowIndex);
-                        Map<String, Object> vision = callVision(userId, conversationId, checkImageUrl, prompt);
-                        String raw = vision != null ? Objects.toString(vision.get("raw"), null) : null;
-                        Boolean contains = parseContainsFromRaw(raw);
-                        log.info("[analyze_image] Row checker returned: rowIndex={}, contains={}", rowIndex, contains);
-                        return new GridLocalizationPipeline.CheckResult(contains, raw);
-                    } catch (Exception e) {
-                        log.error("[analyze_image] Row checker failed for rowIndex={}", rowIndex, e);
-                        return new GridLocalizationPipeline.CheckResult(null, "Error: " + e.getMessage());
-                    }
-                }
-        );
-
-        Integer rowIndex = rowResult.getRowIndex();
-        long rowTime = System.currentTimeMillis() - rowStartTime;
-
-        log.info("[analyze_image] Phase 1 completed in {}ms. Found row: {}, bannedRows={}",
-                rowTime, rowIndex, rowResult.getBannedRows());
-
-        if (rowIndex == null) {
-            Map<String, Object> result = new LinkedHashMap<>();
-            result.put("grid_mode", true);
-            result.put("grid_rows", gridRows);
-            result.put("grid_cols", gridCols);
-            result.put("grid_row_raw", rowResult.getSelectRaw());
-            result.put("row_check_raw", rowResult.getCheckRaw());
-            result.put("banned_rows", rowResult.getBannedRows());
-            result.put("grid_error", "Failed to find row after " + MAX_ROW_ATTEMPTS + " attempts");
-
-            log.error("[analyze_image] Row localization failed after {} attempts", MAX_ROW_ATTEMPTS);
+        // 1) 载入完整图片（带缓存）
+        BufferedImage img;
+        try {
+            img = loadImageWithCache(f);
+        } catch (Exception e) {
+            String err = "Failed to load image for binary search: " + e.getMessage();
+            log.error("[analyze_image] {}", err, e);
+            result.put("coordinate_error", err);
             return result;
         }
 
-        // ========== 阶段2：并发列定位 ==========
-        log.info("[analyze_image] Phase 2: Finding column with {} max attempts...", MAX_COL_ATTEMPTS);
-        long colStartTime = System.currentTimeMillis();
-
-        GridLocalizationPipeline.ColResult colResult = pipeline.findColConcurrently(
-                gridCols,
-                MAX_COL_ATTEMPTS,
-                // 列选择器
-                (bannedCols) -> {
-                    log.debug("[analyze_image] Col selector called with bannedCols={}", bannedCols);
-                    String prompt = buildColPrompt(visionPrompt, gridCols, rowIndex, bannedCols);
-                    Map<String, Object> vision = callVision(userId, conversationId, imageUrl, prompt);
-                    String raw = vision != null ? Objects.toString(vision.get("raw"), null) : null;
-                    Integer col = parseIndexFromRaw(raw, "col");
-                    log.info("[analyze_image] Col selector returned: col={}, bannedCols={}", col, bannedCols);
-                    return new GridLocalizationPipeline.SelectResult(null, col, raw);
-                },
-                // 列确认器
-                (colIndex) -> {
-                    log.debug("[analyze_image] Col checker called for colIndex={}", colIndex);
-                    try {
-                        String cellImageUrl = buildCellPatchDataUrl(f, rowIndex, colIndex, gridRows, gridCols);
-                        String checkImageUrl = cellImageUrl != null ? cellImageUrl : imageUrl;
-                        String prompt = buildColCheckPrompt(visionPrompt, gridRows, gridCols, rowIndex, colIndex);
-                        Map<String, Object> vision = callVision(userId, conversationId, checkImageUrl, prompt);
-                        String raw = vision != null ? Objects.toString(vision.get("raw"), null) : null;
-                        Boolean contains = parseContainsFromRaw(raw);
-                        log.info("[analyze_image] Col checker returned: colIndex={}, contains={}", colIndex, contains);
-                        return new GridLocalizationPipeline.CheckResult(contains, raw);
-                    } catch (Exception e) {
-                        log.error("[analyze_image] Col checker failed for colIndex={}", colIndex, e);
-                        return new GridLocalizationPipeline.CheckResult(null, "Error: " + e.getMessage());
-                    }
-                }
-        );
-
-        long colTime = System.currentTimeMillis() - colStartTime;
-        log.info("[analyze_image] Phase 2 completed in {}ms. Found col: {}, bannedCols={}",
-                colTime, colResult.getColIndex(), colResult.getBannedCols());
-
-        // ========== 组装结果 ==========
-        Map<String, Object> result = buildGridResult(
-                rowResult.getSelectRaw(),
-                colResult.getSelectRaw(),
-                rowIndex,
-                colResult.getColIndex(),
-                width, height, gridRows, gridCols
-        );
-
-        result.put("row_check_raw", rowResult.getCheckRaw());
-        result.put("row_contains_target", rowResult.getContainsTarget());
-        result.put("banned_rows", rowResult.getBannedRows());
-
-        result.put("col_check_raw", colResult.getCheckRaw());
-        result.put("col_contains_target", colResult.getContainsTarget());
-        result.put("banned_cols", colResult.getBannedCols());
-
-        if (colResult.getColIndex() == null) {
-            String error = "Failed to find column after " + MAX_COL_ATTEMPTS + " attempts";
-            result.put("grid_error", error);
-            log.error("[analyze_image] {}", error);
+        if (img == null) {
+            String err = "Image is null after loadImageWithCache";
+            log.error("[analyze_image] {}", err);
+            result.put("coordinate_error", err);
+            return result;
         }
 
-        long totalTime = System.currentTimeMillis() - totalStartTime;
-        log.info("[analyze_image] ===== Concurrent coordinate localization completed in {}ms ===== " +
-                        "row={}, col={}, click=({}, {})",
-                totalTime, rowIndex, colResult.getColIndex(),
-                result.get("click_x"), result.get("click_y"));
+        int imgW = img.getWidth();
+        int imgH = img.getHeight();
+        log.info("[analyze_image] Binary search on image size {}x{}", imgW, imgH);
+
+        if (imgW <= 0 || imgH <= 0) {
+            String err = "Invalid image size " + imgW + "x" + imgH;
+            log.error("[analyze_image] {}", err);
+            result.put("grid_error", err);
+            return result;
+        }
+
+        // 以真正图片大小为准，覆盖元数据中的 width/height
+        width = imgW;
+        height = imgH;
+
+        String containsPrompt = buildContainsPrompt(visionPrompt);
+
+        // ========== Phase 1: Y 方向二分 ==========
+        int yLow = 0;
+        int yHigh = height;
+        int ySteps = 0;
+        String lastYRaw = null;
+
+        if (height > MIN_COORDINATE_SPAN_PX) {
+            while ((yHigh - yLow) > MIN_COORDINATE_SPAN_PX && ySteps < MAX_ROW_ATTEMPTS) {
+                int mid = (yLow + yHigh) / 2;
+                int bandHeight = mid - yLow;
+                if (bandHeight <= 0) {
+                    log.warn("[analyze_image] Y binary search: bandHeight <= 0, break");
+                    break;
+                }
+
+                String patchUrl = buildRectDataUrl(img, 0, yLow, width, bandHeight);
+                if (!StringUtils.hasText(patchUrl)) {
+                    log.warn("[analyze_image] Y binary search: patchUrl is empty, break");
+                    break;
+                }
+
+                Map<String, Object> vision = callVision(userId, conversationId, patchUrl, containsPrompt);
+                String raw = vision != null ? Objects.toString(vision.get("raw"), null) : null;
+                lastYRaw = raw;
+                Boolean contains = parseContainsFromRaw(raw);
+
+                log.info("[analyze_image] Y binary step={}, range=[{}, {}), mid={}, contains={}",
+                        ySteps, yLow, yHigh, mid, contains);
+
+                if (contains == null) {
+                    // 解析失败就停下，用当前区间
+                    log.warn("[analyze_image] Y binary search: parseContainsFromRaw returned null, stop");
+                    break;
+                }
+
+                if (Boolean.TRUE.equals(contains)) {
+                    // 目标在上半段 [yLow, mid)
+                    yHigh = mid;
+                } else {
+                    // 目标在下半段 [mid, yHigh)
+                    yLow = mid;
+                }
+
+                ySteps++;
+            }
+        }
+
+        int yCenter = (yLow + yHigh) / 2;
+        result.put("search_y_low", yLow);
+        result.put("search_y_high", yHigh);
+        result.put("search_y_steps", ySteps);
+        result.put("y_last_raw", lastYRaw);
+
+        log.info("[analyze_image] Y binary done: low={}, high={}, center={}, steps={}",
+                yLow, yHigh, yCenter, ySteps);
+
+        // 如果图片本身高度就很小，不需要 Y 二分
+        if (height <= MIN_COORDINATE_SPAN_PX) {
+            yLow = 0;
+            yHigh = height;
+            yCenter = height / 2;
+        }
+
+        // ========== Phase 2: X 方向二分  ==========
+        int xLow = 0;
+        int xHigh = width;
+        int xSteps = 0;
+        String lastXRaw = null;
+
+        // 用 Y 二分得到的中心点，但不要直接用窄带
+        int yBandCenter = yCenter;
+
+        // 为 X 二分单独定义一个“安全高度”的带
+        // 比如：至少 100px，高度的 1/3 二者取大，再截到 [0, height] 里
+        int minBandHeight = 100;                 // 你可以根据实际调
+        int suggestedBand = height / 3;
+        int bandHeight = Math.min(height, Math.max(minBandHeight, suggestedBand));
+
+        // 让这个带以 yCenter 为中心
+        int bandTop = yBandCenter - bandHeight / 2;
+        int bandBottom = bandTop + bandHeight;
+
+        // 边界裁剪
+        if (bandTop < 0) {
+            bandTop = 0;
+            bandBottom = Math.min(height, bandHeight);
+        } else if (bandBottom > height) {
+            bandBottom = height;
+            bandTop = Math.max(0, height - bandHeight);
+        }
+
+        log.info("[analyze_image] X-band for binary search: top={}, bottom={}, height={}", bandTop, bandBottom, bandBottom - bandTop);
+
+
+        if (width > MIN_COORDINATE_SPAN_PX) {
+            while ((xHigh - xLow) > MIN_COORDINATE_SPAN_PX && xSteps < MAX_COL_ATTEMPTS) {
+                int mid = (xLow + xHigh) / 2;
+                int bandWidth = mid - xLow;
+                if (bandWidth <= 0) {
+                    log.warn("[analyze_image] X binary search: bandWidth <= 0, break");
+                    break;
+                }
+
+                String patchUrl = buildRectDataUrl(img, xLow, bandTop, bandWidth, bandBottom - bandTop);
+                if (!StringUtils.hasText(patchUrl)) {
+                    log.warn("[analyze_image] X binary search: patchUrl is empty, break");
+                    break;
+                }
+
+                Map<String, Object> vision = callVision(userId, conversationId, patchUrl, containsPrompt);
+                String raw = vision != null ? Objects.toString(vision.get("raw"), null) : null;
+                lastXRaw = raw;
+                Boolean contains = parseContainsFromRaw(raw);
+
+                log.info("[analyze_image] X binary step={}, range=[{}, {}), mid={}, contains={}",
+                        xSteps, xLow, xHigh, mid, contains);
+
+                if (contains == null) {
+                    log.warn("[analyze_image] X binary search: parseContainsFromRaw returned null, stop");
+                    break;
+                }
+
+                if (Boolean.TRUE.equals(contains)) {
+                    // 目标在左半段 [xLow, mid)
+                    xHigh = mid;
+                } else {
+                    // 目标在右半段 [mid, xHigh)
+                    xLow = mid;
+                }
+
+                xSteps++;
+            }
+        }
+
+        int xCenter = (xLow + xHigh) / 2;
+        result.put("search_x_low", xLow);
+        result.put("search_x_high", xHigh);
+        result.put("search_x_steps", xSteps);
+        result.put("x_last_raw", lastXRaw);
+
+        log.info("[analyze_image] X binary done: low={}, high={}, center={}, steps={}",
+                xLow, xHigh, xCenter, xSteps);
+
+        // 宽度很小则直接取中心
+        if (width <= MIN_COORDINATE_SPAN_PX) {
+            xLow = 0;
+            xHigh = width;
+            xCenter = width / 2;
+        }
+
+        // 最终点击坐标 = 区间中心
+        result.put("click_x", xCenter);
+        result.put("click_y", yCenter);
+
+        log.info("[analyze_image] ===== Binary search complete. click=({}, {}), steps=(Y={}, X={}) =====",
+                xCenter, yCenter, ySteps, xSteps);
 
         return result;
     }
