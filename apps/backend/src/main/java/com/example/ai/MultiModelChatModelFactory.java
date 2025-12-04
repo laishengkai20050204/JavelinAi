@@ -1,5 +1,6 @@
 package com.example.ai;
 
+import com.example.ai.impl.DeepseekReasonerChatModel;
 import com.example.config.AiMultiModelProperties;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -11,6 +12,7 @@ import org.springframework.ai.openai.api.OpenAiApi;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
+import org.springframework.web.reactive.function.client.WebClient;
 
 import java.util.Optional;
 
@@ -29,6 +31,7 @@ public class MultiModelChatModelFactory {
     private final ObjectProvider<OllamaChatModel> ollamaChatModelProvider;
     private final ObjectProvider<OpenAiChatModel> openAiChatModelProvider;
     private final ObjectProvider<OpenAiApi> openAiApiProvider;
+    private final com.fasterxml.jackson.databind.ObjectMapper mapper;
 
     public ChatModel create(String name, com.example.runtime.RuntimeConfig.ModelProfileDto dto) {
         if (dto == null || dto.getProvider() == null) {
@@ -55,6 +58,8 @@ public class MultiModelChatModelFactory {
         return switch (provider) {
             case "openai", "openai-compatible", "glm-openai", "gemini" ->
                     buildOpenAiCompatibleModel(profile);
+            case "deepseek" ->
+                    buildDeepseekModel(profile);
             case "ollama" ->
                     buildOllamaModel(profile);
             default ->
@@ -103,6 +108,41 @@ public class MultiModelChatModelFactory {
         log.info("[MultiModelChatModelFactory] built OpenAI-compatible model provider={} baseUrl={} modelId={}",
                 profile.getProvider(), baseUrl, modelId);
         return model;
+    }
+
+    private ChatModel buildDeepseekModel(AiMultiModelProperties.ModelProfile profile) {
+        String modelId = profile.getModelId();
+        if ("deepseek-reasoner".equalsIgnoreCase(modelId)) {
+            return buildDeepseekReasonerModel(profile);
+        }
+        // Other DeepSeek models can still use the OpenAI-compatible path.
+        return buildOpenAiCompatibleModel(profile);
+    }
+
+    private ChatModel buildDeepseekReasonerModel(AiMultiModelProperties.ModelProfile profile) {
+        String baseUrl = Optional.ofNullable(profile.getBaseUrl())
+                .filter(StringUtils::hasText)
+                .orElse("https://api.deepseek.com");
+
+        String apiKey = Optional.ofNullable(profile.getApiKey())
+                .orElseThrow(() -> new IllegalStateException(
+                        "apiKey must be set for provider=deepseek"));
+
+        String modelId = Optional.ofNullable(profile.getModelId())
+                .filter(StringUtils::hasText)
+                .orElse("deepseek-reasoner");
+
+        Double temperature = profile.getTemperature();
+
+        WebClient client = WebClient.builder()
+                .baseUrl(baseUrl)
+                .defaultHeader("Authorization", "Bearer " + apiKey)
+                .build();
+
+        log.info("[MultiModelChatModelFactory] built DeepSeek Reasoner model baseUrl={} modelId={}",
+                baseUrl, modelId);
+
+        return new DeepseekReasonerChatModel(client, mapper, modelId, temperature);
     }
 
     private ChatModel buildOllamaModel(AiMultiModelProperties.ModelProfile profile) {

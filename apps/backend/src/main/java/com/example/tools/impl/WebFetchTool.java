@@ -48,7 +48,7 @@ public class WebFetchTool implements AiTool {
     public void init() {
         this.jsoupAvailable = classPresent("org.jsoup.Jsoup");
 
-        // 独立�?WebClient，限制单次内�?
+        // 独立WebClient，限制单次
         ExchangeStrategies strategies = ExchangeStrategies.builder()
                 .codecs(c -> c.defaultCodecs().maxInMemorySize(props.getMaxInMemoryBytes()))
                 .build();
@@ -76,7 +76,7 @@ public class WebFetchTool implements AiTool {
         schema.put("type", "object");
         Map<String, Object> ps = new LinkedHashMap<>();
         ps.put("url", Map.of("type","string","minLength",1,"description","Absolute HTTP(S) URL"));
-        ps.put("max_chars", Map.of("type","integer","minimum",200,"maximum",20000,"default",props.getDefaultMaxChars()));
+        ps.put("max_chars", Map.of("type","integer","minimum",200,"maximum",100000,"default",props.getDefaultMaxChars()));
         ps.put("selector", Map.of("type","string","description","Optional CSS selector (jsoup if available)"));
         schema.put("properties", ps);
         schema.put("required", List.of("url"));
@@ -93,7 +93,7 @@ public class WebFetchTool implements AiTool {
             }
 
             int maxChars = intOr(args.get("max_chars"), props.getDefaultMaxChars());
-            maxChars = Math.max(200, Math.min(20000, maxChars));
+            maxChars = Math.max(200, Math.min(100_000, maxChars));
             String selector = str(args.get("selector"));
 
             // === 1) 规范�?URL + 基础校验/SSRF 防护 ===
@@ -150,7 +150,10 @@ public class WebFetchTool implements AiTool {
 
             String title = Optional.ofNullable(ex.title).orElse("");
             String excerpt = Optional.ofNullable(ex.excerpt).orElse("");
-            String summary = summarizeFetchResult(title, excerpt, uri.toString());
+
+            // ✅ summary 长度上限：不超过正文长度，也不超过 4000 字
+            int maxSummaryChars = Math.min(maxChars, 50000);
+            String summary = summarizeFetchResult(title, excerpt, uri.toString(), maxSummaryChars);
 
             Map<String,Object> payload = new LinkedHashMap<>();
             payload.put("url", uri.toString());
@@ -272,9 +275,10 @@ public class WebFetchTool implements AiTool {
                 || ia.isMulticastAddress();
     }
 
-    private String summarizeFetchResult(String title, String excerpt, String url) {
+    private String summarizeFetchResult(String title, String excerpt, String url, int maxSummaryChars) {
         String safeTitle = title == null ? "" : title.trim();
         String safeExcerpt = excerpt == null ? "" : excerpt.trim();
+
         StringBuilder sb = new StringBuilder();
         if (StringUtils.hasText(safeTitle)) {
             sb.append("Fetched \"").append(safeTitle).append("\"");
@@ -285,12 +289,14 @@ public class WebFetchTool implements AiTool {
             sb.append(" (").append(url).append(")");
         }
         if (StringUtils.hasText(safeExcerpt)) {
-            sb.append(": ").append(truncate(safeExcerpt, 200));
+            // ✅ 这里不再固定 200，而是用 maxSummaryChars
+            sb.append(": ").append(truncate(safeExcerpt, maxSummaryChars));
         }
         return sb.toString();
     }
 
-    // ======= 小工�?=======
+
+    // ======= 小工具 =======
 
     private static String str(Object o) { return o == null ? null : String.valueOf(o); }
     private static int intOr(Object o, int d) { try { return o==null?d:Integer.parseInt(String.valueOf(o)); } catch (Exception e){ return d; } }

@@ -37,9 +37,11 @@ public class FinalAnswerStreamManager {
     /** 聚合后的结构 */
     public static final class Aggregated {
         public final String content;
+        public final String thinking;
         public final List<Map<String,Object>> toolCalls; // OpenAI 样式：{id,type=function,function:{name,arguments}}
-        public Aggregated(String content, List<Map<String,Object>> toolCalls) {
+        public Aggregated(String content, String thinking, List<Map<String,Object>> toolCalls) {
             this.content = content;
+            this.thinking = thinking;
             this.toolCalls = toolCalls;
         }
     }
@@ -59,6 +61,7 @@ public class FinalAnswerStreamManager {
     static final class Holder {
         final Sinks.Many<String> chunkSink = Sinks.many().multicast().directBestEffort();
         final StringBuilder buf = new StringBuilder(1024);
+        final StringBuilder thinkingBuf = new StringBuilder(2048);
         final Map<Integer, ToolAcc> tools = new LinkedHashMap<>(); // index -> acc
         volatile Disposable upstream;
         volatile boolean started = false;
@@ -89,6 +92,11 @@ public class FinalAnswerStreamManager {
                         String part = delta.path("content").asText(null);
                         if (part != null && !part.isEmpty()) {
                             h.buf.append(part);
+                        }
+                        // thinking 累计（如果存在）
+                        String thinkingPart = delta.path("thinking").asText(null);
+                        if (thinkingPart != null && !thinkingPart.isEmpty()) {
+                            h.thinkingBuf.append(thinkingPart);
                         }
 
                         // tool_calls 增量
@@ -158,7 +166,16 @@ public class FinalAnswerStreamManager {
                 // 将“无新 token 超过 idle”视为正常完成（而不是报错）
                 .timeout(idle)
                 .onErrorResume(java.util.concurrent.TimeoutException.class, e -> Mono.empty())
-                .then(Mono.fromCallable(() -> h.buf.toString()));
+                .then(Mono.fromCallable(() -> {
+                    // DeepSeek Reasoner 这类模型可能只在 thinking 字段里返回文本。
+                    if (h.buf.length() > 0) {
+                        return h.buf.toString();
+                    }
+                    if (h.thinkingBuf.length() > 0) {
+                        return h.thinkingBuf.toString();
+                    }
+                    return "";
+                }));
     }
 
     /**
@@ -188,7 +205,7 @@ public class FinalAnswerStreamManager {
                         item.put("function", fn);
                         toolCalls.add(item);
                     }
-                    return new Aggregated(h.buf.toString(), toolCalls);
+                    return new Aggregated(h.buf.toString(), h.thinkingBuf.toString(), toolCalls);
                 }));
     }
 

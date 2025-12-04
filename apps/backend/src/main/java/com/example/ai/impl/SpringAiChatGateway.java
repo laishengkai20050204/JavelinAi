@@ -463,7 +463,7 @@ public class SpringAiChatGateway implements ChatGateway {
                     toolCtx.put(k, v == null ? "null" : String.valueOf(v)));
         }
 
-        // messages（来�?Prompt�?
+        // messages（来自Prompt）
         ArrayNode msgs = root.putArray("messages");
         for (Message m : prompt.getInstructions()) {
             if (m instanceof SystemMessage sm) {
@@ -478,6 +478,8 @@ public class SpringAiChatGateway implements ChatGateway {
                 ObjectNode n = msgs.addObject();
                 n.put("role", "assistant");
                 n.put("content", am.getText() == null ? "" : am.getText());
+                // For DeepSeek Reasoner compatibility, preview also shows reasoning_content.
+                n.put("reasoning_content", "");
                 if (am.hasToolCalls()) {
                     ArrayNode tcs = n.putArray("tool_calls");
                     for (AssistantMessage.ToolCall tc : am.getToolCalls()) {
@@ -918,6 +920,20 @@ public class SpringAiChatGateway implements ChatGateway {
         n.put("role", "assistant");
         n.put("content", am.getText() == null ? "" : am.getText());
 
+        String thinking = "";
+        try {
+            Map<String, Object> meta = am.getMetadata();
+            if (meta != null && !meta.isEmpty()) {
+                Object v = meta.getOrDefault("reasoning",
+                        meta.getOrDefault("reasoning_content", null));
+                if (v != null) {
+                    thinking = String.valueOf(v);
+                }
+            }
+        } catch (Exception ignore) {
+        }
+        n.put("thinking", thinking);
+
         if (am.hasToolCalls()) {
             ArrayNode tcs = n.putArray("tool_calls");
             for (AssistantMessage.ToolCall tc : am.getToolCalls()) {
@@ -970,18 +986,43 @@ public class SpringAiChatGateway implements ChatGateway {
                 ? message.getText()
                 : "";
 
+        String thinking = "";
+        if (message != null) {
+            try {
+                Map<String, Object> meta = message.getMetadata();
+                if (meta != null && !meta.isEmpty()) {
+                    Object v = meta.getOrDefault("reasoning",
+                            meta.getOrDefault("reasoning_content", null));
+                    if (v != null) {
+                        thinking = String.valueOf(v);
+                    }
+                }
+            } catch (Exception ignore) {
+                // ignore metadata issues, fallback to empty thinking
+            }
+        }
+
+        // 对于 deepseek-reasoner 等思考模型：
+        // 若 content 为空但 thinking 非空，则让 content 也回退为 thinking，
+        // 保持前端只读 content 时也能看到文字。
+        String visibleContent = content;
+        if ((visibleContent == null || visibleContent.isEmpty()) && thinking != null && !thinking.isEmpty()) {
+            visibleContent = thinking;
+        }
+
         ObjectNode root = mapper.createObjectNode();
         ObjectNode messageNode = root.putObject("message");
         messageNode.put("role", MessageType.ASSISTANT.toString().toLowerCase(Locale.ROOT));
-        messageNode.put("content", content);
-        messageNode.put("thinking", "");
+        messageNode.put("content", visibleContent);
+        messageNode.put("thinking", thinking);
 
         ArrayNode choices = root.putArray("choices");
         ObjectNode choice = choices.addObject();
         choice.put("index", 0);
         ObjectNode choiceMessage = choice.putObject("message");
         choiceMessage.put("role", "assistant");
-        choiceMessage.put("content", content);
+        choiceMessage.put("content", visibleContent);
+        choiceMessage.put("thinking", thinking);
 
         if (message != null && message.hasToolCalls()) {
             ArrayNode toolCallsNode = choiceMessage.putArray("tool_calls");
@@ -1027,8 +1068,33 @@ public class SpringAiChatGateway implements ChatGateway {
         }
 
         String content = message.getText();
-        if (content != null && !content.isEmpty()) {
-            delta.put("content", content);
+
+        String thinking = "";
+        try {
+            Map<String, Object> meta = message.getMetadata();
+            if (meta != null && !meta.isEmpty()) {
+                Object v = meta.getOrDefault("reasoning",
+                        meta.getOrDefault("reasoning_content", null));
+                if (v != null) {
+                    thinking = String.valueOf(v);
+                }
+            }
+        } catch (Exception ignore) {
+        }
+
+        // 同步 formatResponse 的可见内容策略：
+        // 优先用 content；若为空且有 thinking，则用 thinking 作为 content，
+        // 以便 SSE 客户端只读 delta.content 也能看到文本。
+        String visibleContent = content;
+        if ((visibleContent == null || visibleContent.isEmpty()) && thinking != null && !thinking.isEmpty()) {
+            visibleContent = thinking;
+        }
+
+        if (visibleContent != null && !visibleContent.isEmpty()) {
+            delta.put("content", visibleContent);
+        }
+        if (!thinking.isEmpty()) {
+            delta.put("thinking", thinking);
         }
 
         if (message.hasToolCalls()) {

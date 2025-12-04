@@ -1,5 +1,5 @@
 {
-  "profile" : null,
+  "profile" : "deepseek-reasoner",
   "toolsMaxLoops" : 100,
   "toolToggles" : {
     "debug_tool" : false,

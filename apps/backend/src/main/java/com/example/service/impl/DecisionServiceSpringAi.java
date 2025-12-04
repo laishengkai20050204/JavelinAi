@@ -89,10 +89,11 @@ public class DecisionServiceSpringAi implements DecisionService {
                     // ⭐ 第 1 层：看看聚合结果里到底有没有 toolCalls
                     .doOnNext(agg -> {
                         log.info(
-                                "[DECISION-AGG] step={} toolCallsRawSize={} contentLen={}",
+                                "[DECISION-AGG] step={} toolCallsRawSize={} contentLen={} thinkingLen={}",
                                 st != null ? st.stepId() : "<null-step>",
                                 (agg.toolCalls == null ? -1 : agg.toolCalls.size()),
-                                (agg.content == null ? 0 : agg.content.length())
+                                (agg.content == null ? 0 : agg.content.length()),
+                                (agg.thinking == null ? 0 : agg.thinking.length())
                         );
                     })
                     .map(agg -> {

@@ -79,7 +79,7 @@ ai:
     log-raw-response: true
     include-raw-in-gateway-json: true
   multi:
-    primary-model: glm-agent
+    primary-model: deepseek-reasoner
     models:
       glm-agent:
         provider: glm-openai
@@ -115,6 +115,13 @@ ai:
           model-id: gpt-4o
           temperature: 0.2
           tool-context-render-mode: ALL_TOOL
+      deepseek-reasoner:
+        provider: deepseek
+        base-url: https://api.deepseek.com
+        api-key: ${DEEPSEEK_API_KEY}
+        model-id: deepseek-reasoner
+        temperature: 0.2
+        tool-context-render-mode: ALL_TOOL
 
 
 
