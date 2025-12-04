@@ -8,7 +8,7 @@ const CURRENT_ORIGIN =
 const DEFAULT_BASE_URL = CURRENT_ORIGIN || "";
 
 // 默认的本机控制服务 API Key（要和 FastAPI 那边的 API_KEY 对上）
-const DEFAULT_API_KEY = "change-me-please";
+const DEFAULT_API_KEY = "";
 
 // ===== 通用小工具函数 =====
 function toNumber(v: any, fallback: number): number {

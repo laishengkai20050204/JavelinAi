@@ -92,17 +92,17 @@ ai:
         provider: openai
         base-url: https://api.vveai.com
         api-key: ${OPENAI_API_KEY}
-        model-id: gpt-5-high
+        model-id: gpt-5
         temperature: 0.2
         tool-context-render-mode: ALL_TOOL
       gemini-vision:
-        provider: geminiwe
+        provider: gemini
         base-url: https://api.vveai.com
         api-key: ${GEMINI_API_KEY}
         model-id: gemini-2.5-pro
         tool-context-render-mode: ALL_SUMMARY
       qwen-vision:
-        provider: qwen
+        provider: openai-compatible
         base-url: https://dashscope.aliyuncs.com/compatible-mode
         api-key: ${QWEN_API_KEY}
         model-id: qwen3-vl-plus
@@ -169,3 +169,8 @@ storage:
     defaultBucket: javelin-exec        # 建议预设一个默认桶
     presignExpirySeconds: 3600        # 预签名URL有效期（秒）
     public-base-url: https://javelinai.cloud:65019/minio
+
+ocr:
+  paddle:
+    base-url: http://localhost:8081
+    timeout-ms: 15000

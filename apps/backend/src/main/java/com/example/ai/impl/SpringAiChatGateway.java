@@ -28,6 +28,7 @@ import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.chat.prompt.ChatOptions;
 import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.content.Media;
 import org.springframework.ai.model.tool.DefaultToolCallingChatOptions;
 import org.springframework.ai.model.tool.ToolCallingChatOptions;
 import org.springframework.ai.openai.OpenAiChatOptions;
@@ -36,6 +37,8 @@ import org.springframework.ai.tool.definition.DefaultToolDefinition;
 import org.springframework.ai.tool.definition.ToolDefinition;
 import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Component;
+import org.springframework.util.MimeType;
+import org.springframework.util.MimeTypeUtils;
 import org.springframework.util.StringUtils;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
 import reactor.core.Exceptions;
@@ -43,6 +46,7 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
+import java.net.URI;
 import java.util.*;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -607,7 +611,8 @@ public class SpringAiChatGateway implements ChatGateway {
             return new SystemMessage(normalizeContent(content));
         }
         if ("user".equalsIgnoreCase(role)) {
-            return new UserMessage(normalizeContent(content));
+            // ✅ 这里改成支持多模态
+            return buildUserMessageWithMedia(source);
         }
         if ("assistant".equalsIgnoreCase(role)) {
             String text = normalizeContent(content);
@@ -1091,4 +1096,67 @@ public class SpringAiChatGateway implements ChatGateway {
             log.warn("[PROVIDER-ERROR] {}", e.toString());
         }
     }
+
+
+    @SuppressWarnings("unchecked")
+    private UserMessage buildUserMessageWithMedia(Map<String, Object> source) {
+        Object content = source.get("content");
+
+        StringBuilder textBuilder = new StringBuilder();
+        List<Media> mediaList = new ArrayList<>();
+
+        // 1) 新格式：content 是块数组 [ {type: input_text}, {type: input_image_url, ...} ]
+        if (content instanceof List<?> blocks) {
+            for (Object b : blocks) {
+                if (!(b instanceof Map<?, ?> raw)) {
+                    continue;
+                }
+                Map<String, Object> block = castToMap(raw);
+                String type = asString(block.get("type"));
+
+                if ("input_text".equalsIgnoreCase(type)) {
+                    Object t = block.get("text");
+                    if (t != null) {
+                        textBuilder.append(t);
+                    }
+                } else if ("input_image_url".equalsIgnoreCase(type)) {
+                    String url = asString(block.get("url"));
+                    if (!StringUtils.hasText(url)) {
+                        continue;
+                    }
+                    String mime = asString(block.get("mime_type")); // 可选
+                    MimeType mimeType = StringUtils.hasText(mime)
+                            ? MimeType.valueOf(mime)
+                            : MimeTypeUtils.IMAGE_PNG;
+                    mediaList.add(new Media(mimeType, URI.create(url)));
+                } else {
+                    // 其他未知块类型，尽量把里面的文字捞出来拼到 text 里
+                    Object t = block.get("text");
+                    if (t == null) t = block.get("content");
+                    if (t == null) t = block.get("value");
+                    if (t != null) {
+                        textBuilder.append(t);
+                    }
+                }
+            }
+        } else {
+            // 2) 老格式：content 是纯字符串，兼容原来的行为
+            textBuilder.append(normalizeContent(content));
+        }
+
+        String text = textBuilder.toString();
+
+        if (mediaList.isEmpty()) {
+            // 没有多模态，就退回原来的构造
+            return new UserMessage(text);
+        }
+
+        // 有多模态，走 builder
+        return UserMessage.builder()
+                .text(text)
+                .media(mediaList)
+                .build();
+    }
+
+
 }

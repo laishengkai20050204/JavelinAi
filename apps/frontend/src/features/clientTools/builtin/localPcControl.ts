@@ -2,7 +2,7 @@
 import type { ClientTool } from "../types";
 
 const DEFAULT_PC_AGENT_BASE_URL = "http://127.0.0.1:5001";
-const PC_AGENT_API_KEY = "change-me-please"; // 和 FastAPI 那边对上
+const PC_AGENT_API_KEY = ""; // 和 FastAPI 那边对上
 
 // ==== 前端基础工具函数：和 ChatFileUploader 一致的 joinUrl / rewriteToCurrentOrigin ====
 
@@ -20,7 +20,7 @@ function rewriteToCurrentOrigin(url: string): string {
         const origin = window.location.origin;
         let path = u.pathname || "/";
 
-        // ⭐ 关键：如果路径还没有 /minio/ 前缀，就补上
+        // ⭐ 如果路径还没有 /minio/ 前缀，就补上
         if (!path.startsWith("/minio/")) {
             if (!path.startsWith("/")) path = "/" + path;
             path = "/minio" + path;
@@ -31,7 +31,6 @@ function rewriteToCurrentOrigin(url: string): string {
         return url;
     }
 }
-
 
 // data:image/png;base64,... → File
 function dataUrlToFile(dataUrl: string, filename: string): File {
@@ -49,14 +48,7 @@ function dataUrlToFile(dataUrl: string, filename: string): File {
     return new File([blob], filename, { type: mime });
 }
 
-type LocalPcAction =
-    | "get_screen"
-    | "screenshot"
-    | "move_mouse"
-    | "click"
-    | "scroll"
-    | "press_key"
-    | "write_text";
+// ==== 调用 PC Agent 的基础封装 ====
 
 async function callPcAgent<TReq, TRes>(
     path: string,
@@ -77,13 +69,55 @@ async function callPcAgent<TReq, TRes>(
     return (await resp.json()) as TRes;
 }
 
+async function callPcAgentGet<TRes>(
+    path: string,
+    searchParams?: Record<string, any>
+): Promise<TRes> {
+    const url = new URL(`${DEFAULT_PC_AGENT_BASE_URL}${path}`);
+    if (searchParams) {
+        for (const [k, v] of Object.entries(searchParams)) {
+            if (v === undefined || v === null) continue;
+            url.searchParams.set(k, String(v));
+        }
+    }
+
+    const resp = await fetch(url.toString(), {
+        method: "GET",
+        headers: {
+            "X-API-Key": PC_AGENT_API_KEY,
+        },
+    });
+    if (!resp.ok) {
+        const text = await resp.text();
+        throw new Error(`PC agent GET error: ${resp.status} ${resp.statusText}: ${text}`);
+    }
+    return (await resp.json()) as TRes;
+}
+
+type LocalPcAction =
+    | "get_screen"
+    | "screenshot"
+    | "move_mouse"
+    | "click"
+    | "scroll"
+    | "press_key"
+    | "write_text"
+    // ==== 新增：PID / 进程 / 应用相关 ====
+    | "list_processes"
+    | "get_process"
+    | "screenshot_process"
+    | "focus_process"
+    | "terminate_process"
+    | "list_apps"
+    | "launch_app"
+    | "list_managed";
+
 export const localPcControlTool: ClientTool = {
     manifest: {
-        name: "local_pc_control", // 工具名，用这个给后端暴露
+        name: "local_pc_control",
         description:
-            "Control local PC: get screen size, screenshot (and upload), move mouse, click, scroll, press keys, write text.",
+            "Control local PC via local agent: screen info, screenshot (and upload), mouse/keyboard, and PID-based process/app operations.",
         "x-execTarget": "client",
-        // 给 LLM 的参数 JSON Schema
         parameters: {
             type: "object",
             properties: {
@@ -98,23 +132,32 @@ export const localPcControlTool: ClientTool = {
                         "scroll",
                         "press_key",
                         "write_text",
+                        // 新增
+                        "list_processes",
+                        "get_process",
+                        "screenshot_process",
+                        "focus_process",
+                        "terminate_process",
+                        "list_apps",
+                        "launch_app",
+                        "list_managed",
                     ],
                 },
                 params: {
                     description: "Parameters for the given action",
                     oneOf: [
+                        // === get_screen ===
                         {
-                            // ✅ get_screen: 不需要任何参数
                             type: "object",
                             properties: {},
                         },
+                        // === screenshot ===
                         {
-                            // screenshot: 也不需要参数（后面可以扩展区域截图）
                             type: "object",
                             properties: {},
                         },
+                        // === move_mouse ===
                         {
-                            // move_mouse
                             type: "object",
                             properties: {
                                 x: {
@@ -133,8 +176,8 @@ export const localPcControlTool: ClientTool = {
                             },
                             required: ["x", "y"],
                         },
+                        // === click ===
                         {
-                            // click
                             type: "object",
                             properties: {
                                 button: {
@@ -153,8 +196,8 @@ export const localPcControlTool: ClientTool = {
                             },
                             required: [],
                         },
+                        // === scroll ===
                         {
-                            // scroll
                             type: "object",
                             properties: {
                                 amount: {
@@ -164,8 +207,8 @@ export const localPcControlTool: ClientTool = {
                             },
                             required: ["amount"],
                         },
+                        // === press_key ===
                         {
-                            // press_key
                             type: "object",
                             properties: {
                                 key: {
@@ -184,8 +227,8 @@ export const localPcControlTool: ClientTool = {
                             },
                             required: ["key"],
                         },
+                        // === write_text ===
                         {
-                            // write_text
                             type: "object",
                             properties: {
                                 text: {
@@ -199,12 +242,109 @@ export const localPcControlTool: ClientTool = {
                             },
                             required: ["text"],
                         },
+                        // === list_processes ===
+                        {
+                            type: "object",
+                            properties: {
+                                limit: {
+                                    type: "number",
+                                    description: "Max number of processes to return (1-1000)",
+                                },
+                                keyword: {
+                                    type: "string",
+                                    description: "Filter by name/exe/cmdline substring",
+                                },
+                                only_main: {
+                                    type: "boolean",
+                                    description: "Only return inferred main processes",
+                                },
+                                only_managed: {
+                                    type: "boolean",
+                                    description: "Only return agent-managed processes",
+                                },
+                            },
+                            required: [],
+                        },
+                        // === get_process ===
+                        {
+                            type: "object",
+                            properties: {
+                                pid: {
+                                    type: "number",
+                                    description: "Process PID",
+                                },
+                            },
+                            required: ["pid"],
+                        },
+                        // === screenshot_process ===
+                        {
+                            type: "object",
+                            properties: {
+                                pid: {
+                                    type: "number",
+                                    description: "Process PID whose window to capture",
+                                },
+                                bring_to_front: {
+                                    type: "boolean",
+                                    description: "Whether to bring window to front first",
+                                    default: true,
+                                },
+                            },
+                            required: ["pid"],
+                        },
+                        // === focus_process ===
+                        {
+                            type: "object",
+                            properties: {
+                                pid: {
+                                    type: "number",
+                                    description: "Process PID",
+                                },
+                            },
+                            required: ["pid"],
+                        },
+                        // === terminate_process ===
+                        {
+                            type: "object",
+                            properties: {
+                                pid: {
+                                    type: "number",
+                                    description: "Process PID to terminate",
+                                },
+                                force: {
+                                    type: "boolean",
+                                    description: "If true, use kill() instead of terminate()",
+                                    default: false,
+                                },
+                            },
+                            required: ["pid"],
+                        },
+                        // === list_apps ===
+                        {
+                            type: "object",
+                            properties: {},
+                        },
+                        // === launch_app ===
+                        {
+                            type: "object",
+                            properties: {
+                                app_id: {
+                                    type: "string",
+                                    description: "App ID to launch",
+                                },
+                            },
+                            required: ["app_id"],
+                        },
+                        // === list_managed ===
+                        {
+                            type: "object",
+                            properties: {},
+                        },
                     ],
                 },
             },
             required: ["action", "params"],
         },
-        // 返回结构大概：status/x/y 或 screenshot 的 file 信息
         "x-returns": {
             type: "object",
             properties: {
@@ -215,12 +355,90 @@ export const localPcControlTool: ClientTool = {
         },
     },
 
-    // 真正执行逻辑（在浏览器里跑）
     async execute(args, ctx) {
         const action = args.action as LocalPcAction;
         const params = args.params ?? {};
 
+        // 一个小工具方法：把 screenshot 响应上传到 MinIO 并返回 payload
+        const uploadScreenshot = async (
+            data: { width: number; height: number; dataUrl: string },
+            filenamePrefix: string,
+            extraNote?: string,
+            extraFields?: Record<string, any>,
+        ) => {
+            const ts = new Date().toISOString().replace(/[:.]/g, "-");
+            const filename = `${filenamePrefix}-${ts}.png`;
+            const file = dataUrlToFile(data.dataUrl, filename);
+
+            const userId = (ctx.userId || "u1").trim() || "u1";
+            const conversationId = ctx.conversationId || "unknown";
+
+            const fd = new FormData();
+            fd.append("file", file);
+            fd.append("userId", userId);
+            fd.append("conversationId", conversationId);
+
+            const uploadRes = await fetch(
+                joinUrl(BACKEND_BASE_URL, "/files/upload"),
+                {
+                    method: "POST",
+                    body: fd,
+                },
+            );
+            if (!uploadRes.ok) {
+                let msg = `HTTP ${uploadRes.status}`;
+                try {
+                    const t = await uploadRes.text();
+                    if (t) msg += ` - ${t}`;
+                } catch {
+                    // ignore
+                }
+                throw new Error(`upload screenshot failed: ${msg}`);
+            }
+
+            const uploadData = (await uploadRes.json()) as {
+                bucket: string;
+                objectKey: string;
+                url: string;
+                size: number;
+                contentType?: string | null;
+                fileId?: number;
+                id?: number;
+            };
+
+            const normalizedUrl = rewriteToCurrentOrigin(uploadData.url);
+
+            console.log("[local_pc_control] screenshot uploaded", {
+                uploadData,
+                normalizedUrl,
+                userId,
+                conversationId,
+            });
+
+            return {
+                payload: {
+                    type: "image_file",
+                    value: {
+                        width: data.width,
+                        height: data.height,
+                        bucket: uploadData.bucket,
+                        objectKey: uploadData.objectKey,
+                        url: normalizedUrl,
+                        size: uploadData.size,
+                        contentType: uploadData.contentType ?? null,
+                        fileId: uploadData.fileId ?? uploadData.id ?? null,
+                        filename,
+                        note:
+                            extraNote ??
+                            "screenshot captured via local_pc_control and uploaded via /files/upload",
+                        ...(extraFields || {}),
+                    },
+                },
+            };
+        };
+
         switch (action) {
+            // ===== 基础信息 =====
             case "get_screen": {
                 const resp = await fetch(`${DEFAULT_PC_AGENT_BASE_URL}/screen`, {
                     method: "GET",
@@ -234,12 +452,11 @@ export const localPcControlTool: ClientTool = {
                         `PC agent /screen error: ${resp.status} ${resp.statusText}: ${text}`,
                     );
                 }
-                // 返回 { width, height }
-                return await resp.json();
+                return await resp.json(); // { width, height }
             }
 
+            // ===== 全屏截图并上传 =====
             case "screenshot": {
-                // 1) 先向 PC agent 要一张截图（dataUrl）
                 const resp = await fetch(`${DEFAULT_PC_AGENT_BASE_URL}/screenshot`, {
                     method: "GET",
                     headers: {
@@ -258,77 +475,14 @@ export const localPcControlTool: ClientTool = {
                     dataUrl: string;
                 };
 
-                // 2) 把 dataUrl 转成 File
-                const ts = new Date().toISOString().replace(/[:.]/g, "-");
-                const filename = `screenshot-${ts}.png`;
-                const file = dataUrlToFile(data.dataUrl, filename);
-
-                // 3) 走你现有的 /files/upload 接口上传到 MinIO
-                const userId = (ctx.userId || "u1").trim() || "u1";
-                const conversationId = ctx.conversationId || "unknown";
-
-                const fd = new FormData();
-                fd.append("file", file);
-                fd.append("userId", userId);
-                fd.append("conversationId", conversationId);
-
-                const uploadRes = await fetch(
-                    joinUrl(BACKEND_BASE_URL, "/files/upload"),
-                    {
-                        method: "POST",
-                        body: fd,
-                    },
+                return await uploadScreenshot(
+                    data,
+                    "screenshot",
+                    "full-screen screenshot captured via local_pc_control and uploaded via /files/upload",
                 );
-                if (!uploadRes.ok) {
-                    let msg = `HTTP ${uploadRes.status}`;
-                    try {
-                        const t = await uploadRes.text();
-                        if (t) msg += ` - ${t}`;
-                    } catch {
-                        // ignore
-                    }
-                    throw new Error(`upload screenshot failed: ${msg}`);
-                }
-
-                const uploadData = (await uploadRes.json()) as {
-                    bucket: string;
-                    objectKey: string;
-                    url: string;
-                    size: number;
-                    contentType?: string | null;
-                    fileId?: number;
-                    id?: number;
-                };
-
-                const normalizedUrl = rewriteToCurrentOrigin(uploadData.url);
-
-                console.log("[local_pc_control] screenshot uploaded", {
-                    uploadData,
-                    normalizedUrl,
-                    userId,
-                    conversationId,
-                });
-
-                // 4) 返回给 LLM：告诉它“截图已上传”，并带上 URL + 元信息
-                return {
-                    payload: {
-                        type: "image_file",
-                        value: {
-                            width: data.width,
-                            height: data.height,
-                            bucket: uploadData.bucket,
-                            objectKey: uploadData.objectKey,
-                            url: normalizedUrl,
-                            size: uploadData.size,
-                            contentType: uploadData.contentType ?? null,
-                            fileId: uploadData.fileId ?? uploadData.id ?? null,
-                            filename,
-                            note: "screenshot captured via local_pc_control and uploaded via /files/upload",
-                        },
-                    },
-                };
             }
 
+            // ===== 鼠标控制 =====
             case "move_mouse": {
                 const { x, y, duration = 0 } = params;
                 return await callPcAgent("/mouse/move", { x, y, duration });
@@ -348,6 +502,7 @@ export const localPcControlTool: ClientTool = {
                 return await callPcAgent("/mouse/scroll", { amount });
             }
 
+            // ===== 键盘控制 =====
             case "press_key": {
                 const { key, presses = 1, interval = 0.05 } = params;
                 return await callPcAgent("/keyboard/press", {
@@ -363,6 +518,104 @@ export const localPcControlTool: ClientTool = {
                     text,
                     interval,
                 });
+            }
+
+            // ===== 进程列表 / 查询 =====
+            case "list_processes": {
+                const { limit, keyword, only_main, only_managed } = params;
+                return await callPcAgentGet("/processes", {
+                    limit,
+                    keyword,
+                    only_main,
+                    only_managed,
+                });
+            }
+
+            case "get_process": {
+                const { pid } = params;
+                if (typeof pid !== "number") {
+                    throw new Error("get_process requires numeric pid");
+                }
+                return await callPcAgentGet(`/process/${pid}`);
+            }
+
+            // ===== 指定 PID 的窗口截图并上传 =====
+            case "screenshot_process": {
+                const { pid, bring_to_front = true } = params;
+                if (typeof pid !== "number") {
+                    throw new Error("screenshot_process requires numeric pid");
+                }
+
+                const url = new URL(
+                    `${DEFAULT_PC_AGENT_BASE_URL}/process/${pid}/screenshot`,
+                );
+                url.searchParams.set("bring_to_front", String(bring_to_front));
+
+                const resp = await fetch(url.toString(), {
+                    method: "GET",
+                    headers: {
+                        "X-API-Key": PC_AGENT_API_KEY,
+                    },
+                });
+                if (!resp.ok) {
+                    const text = await resp.text();
+                    throw new Error(
+                        `PC agent /process/${pid}/screenshot error: ${resp.status} ${resp.statusText}: ${text}`,
+                    );
+                }
+
+                const data = (await resp.json()) as {
+                    pid: number;
+                    windowCropping: boolean;
+                    width: number;
+                    height: number;
+                    dataUrl: string;
+                };
+
+                return await uploadScreenshot(
+                    data,
+                    `process-${pid}`,
+                    "window screenshot captured via local_pc_control (PID-based) and uploaded via /files/upload",
+                    {
+                        pid: data.pid,
+                        windowCropping: data.windowCropping,
+                    },
+                );
+            }
+
+            // ===== 前台焦点 / 终止进程 =====
+            case "focus_process": {
+                const { pid } = params;
+                if (typeof pid !== "number") {
+                    throw new Error("focus_process requires numeric pid");
+                }
+                return await callPcAgent(`/process/${pid}/focus`, {});
+            }
+
+            case "terminate_process": {
+                const { pid, force = false } = params;
+                if (typeof pid !== "number") {
+                    throw new Error("terminate_process requires numeric pid");
+                }
+                const path = `/process/${pid}/terminate?force=${force ? "true" : "false"}`;
+                return await callPcAgent(path, {});
+            }
+
+            // ===== 应用目录 / 启动 / 管理的进程 =====
+            case "list_apps": {
+                return await callPcAgentGet("/apps");
+            }
+
+            case "launch_app": {
+                const { app_id } = params;
+                if (typeof app_id !== "string" || !app_id) {
+                    throw new Error("launch_app requires app_id");
+                }
+                return await callPcAgent(`/apps/${encodeURIComponent(app_id)}/launch`, {});
+            }
+
+            case "list_managed": {
+                return await callPcAgentGet("/managed");
             }
 
             default:

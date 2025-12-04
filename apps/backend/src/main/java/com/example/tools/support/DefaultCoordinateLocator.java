@@ -1,7 +1,13 @@
 package com.example.tools.support;
 
+import com.example.ai.ChatGateway;
+import com.example.config.EffectiveProps;
 import com.example.file.domain.AiFile;
+import com.example.ocr.OcrEngine;
+import com.example.ocr.OcrTextBox;
 import com.example.storage.StorageService;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -13,10 +19,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.time.Duration;
-import java.util.Base64;
-import java.util.LinkedHashMap;
-import java.util.Map;
-import java.util.Objects;
+import java.util.*;
 
 /**
  * 使用像素坐标做二分搜索（先按 Y，再按 X）来定位点击点。
@@ -33,6 +36,10 @@ public class DefaultCoordinateLocator implements CoordinateLocator{
     private final StorageService storageService;
     private final ImageCacheManager imageCacheManager;
     private final VisionImageClient visionImageService;
+    private final OcrEngine ocrEngine;
+    private final ObjectMapper mapper;   // 还要用来 parse JSON
+
+
 
     /**
      * 像素坐标二分搜索：最小区间大小（像素），当区间长度 <= 该值时停止二分。
@@ -253,9 +260,130 @@ public class DefaultCoordinateLocator implements CoordinateLocator{
     }
 
     @Override
-    public Map<String, Object> findCoordinatesByTextSearch(AiFile file, String userId, String conversationId, String visionPrompt, Integer width, Integer height) throws Exception {
-        return Map.of();
+    public Map<String, Object> findCoordinatesByTextSearch(
+            AiFile file,
+            String userId,
+            String conversationId,
+            String visionPrompt,
+            Integer width,
+            Integer height
+    ) throws Exception {
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("coordinate_mode", true);
+        result.put("coordinate_strategy", "text-local-ocr");
+
+        log.info("[CoordinateLocator] === Text OCR locate start: fileId={}, userId={}, convId={} ===",
+                file.getId(), userId, conversationId);
+        if (StringUtils.hasText(visionPrompt)) {
+            // 避免打印太长，可以截断
+            String shortPrompt = visionPrompt.length() > 120
+                    ? visionPrompt.substring(0, 120) + "..."
+                    : visionPrompt;
+            log.info("[CoordinateLocator] Text OCR visionPrompt={}", shortPrompt);
+        }
+
+        // 1) 读整张图片
+        BufferedImage img = loadImageWithCache(file);
+        if (img == null) {
+            String err = "findCoordinatesByTextSearch: image is null";
+            log.warn("[CoordinateLocator] {}", err);
+            result.put("coordinate_error", err);
+            return result;
+        }
+
+        int imgW = img.getWidth();
+        int imgH = img.getHeight();
+        if (width == null || width <= 0)  width  = imgW;
+        if (height == null || height <= 0) height = imgH;
+
+        result.put("image_width", imgW);
+        result.put("image_height", imgH);
+        result.put("canvas_width", width);
+        result.put("canvas_height", height);
+
+        log.info("[CoordinateLocator] Text OCR on image size {}x{}", imgW, imgH);
+
+        // 2) 本地 OCR
+        List<OcrTextBox> boxes = ocrEngine.recognize(img, "ch+en");
+        if (boxes == null || boxes.isEmpty()) {
+            String err = "OCR returned no text boxes.";
+            log.warn("[CoordinateLocator] {}", err);
+            result.put("coordinate_error", err);
+            return result;
+        }
+        log.info("[CoordinateLocator] Raw OCR boxes count={}", boxes.size());
+
+        // 3) 打包为 ocr_boxes
+        List<Map<String, Object>> boxList = new ArrayList<>();
+        for (int i = 0; i < boxes.size(); i++) {
+            OcrTextBox box = boxes.get(i);
+            if (box == null) continue;
+            String text = box.getText();
+            if (!StringUtils.hasText(text)) continue;
+
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("x", box.getX());
+            m.put("y", box.getY());
+            m.put("width", box.getWidth());
+            m.put("height", box.getHeight());
+            m.put("text", text);
+            m.put("confidence", box.getConfidence());
+            boxList.add(m);
+
+            // 只打印前几条，避免日志爆炸
+            if (i < 5) {
+                log.debug("[CoordinateLocator] OCR box[{}]: ({}, {}, {}, {}), text='{}', conf={}",
+                        i, box.getX(), box.getY(), box.getWidth(), box.getHeight(), text, box.getConfidence());
+            }
+        }
+
+        if (boxList.isEmpty()) {
+            String err = "OCR boxes all empty after filtering.";
+            log.warn("[CoordinateLocator] {}", err);
+            result.put("coordinate_error", err);
+            return result;
+        }
+
+        result.put("ocr_engine", "local-ocr");
+        result.put("ocr_language", "ch+en");
+        result.put("ocr_boxes", boxList);
+        if (StringUtils.hasText(visionPrompt)) {
+            result.put("vision_prompt", visionPrompt);
+        }
+
+        // 4) 询问 LLM：基于 visionPrompt 在 OCR 文本框中选择最匹配的一项
+        Map<String, Object> llmMatch = visionImageService.chooseBestTextBox(
+                userId,
+                conversationId,
+                visionPrompt,
+                boxList
+        );
+        if (llmMatch != null && !llmMatch.isEmpty()) {
+            // 原始 LLM 决策结果放在 llm_match 里
+            result.put("llm_match", llmMatch);
+
+            // 如果算出了中心点，就顺手给一个 click_x / click_y，方便直接点击
+            Object cx = llmMatch.get("center_x");
+            Object cy = llmMatch.get("center_y");
+            if (cx instanceof Number && cy instanceof Number) {
+                int clickX = ((Number) cx).intValue();
+                int clickY = ((Number) cy).intValue();
+                result.put("click_x", clickX);
+                result.put("click_y", clickY);
+            }
+        }
+
+        log.info("[CoordinateLocator] Text OCR done: filtered boxes={}, img=({}x{}), llm_index={}",
+                boxList.size(), imgW, imgH,
+                llmMatch != null ? llmMatch.get("llm_index") : null);
+        log.info("[CoordinateLocator] === Text OCR locate end: fileId={} ===", file.getId());
+
+        return result;
     }
+
+
+    // ====== 辅助方法 ======
 
     /**
      * 使用缓存加载整张图片。
@@ -389,4 +517,21 @@ public class DefaultCoordinateLocator implements CoordinateLocator{
             return null;
         }
     }
+
+
+
+
+
+    private double similarity(String text, String target) {
+        text = text.trim();
+        target = target.trim();
+
+        if (text.equals(target)) return 1.0;
+        if (text.contains(target) || target.contains(text)) return 0.8;
+
+        // 需要再精细可以接个编辑距离，这里先返回 0
+        return 0.0;
+    }
+
+
 }

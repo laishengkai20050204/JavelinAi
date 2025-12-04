@@ -1,5 +1,5 @@
 {
-  "profile" : "glm-agent",
+  "profile" : null,
   "toolsMaxLoops" : 100,
   "toolToggles" : {
     "debug_tool" : false,
