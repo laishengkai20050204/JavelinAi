@@ -121,7 +121,19 @@ ai:
         api-key: ${DEEPSEEK_API_KEY}
         model-id: deepseek-reasoner
         temperature: 0.2
+        think-enabled: true
+        think-level: high
         tool-context-render-mode: ALL_TOOL
+      deepseek-reasoner-plus:
+        provider: deepseek
+        base-url: https://api.deepseek.com/v3.2_speciale_expires_on_20251215
+        api-key: ${DEEPSEEK_API_KEY}
+        model-id: deepseek-reasoner
+        temperature: 0.2
+        tools-enabled: false
+        think-enabled: true
+        think-level: high
+        tool-context-render-mode: ALL_SUMMARY
 
 
 

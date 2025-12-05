@@ -45,6 +45,10 @@ public class DeepseekReasonerChatModel implements ChatModel {
     private final String modelId;
     @Nullable
     private final Double temperature;
+    @Nullable
+    private final Boolean thinkEnabled;
+    @Nullable
+    private final String thinkLevel;
 
     @Override
     public ChatResponse call(Prompt prompt) {
@@ -53,6 +57,11 @@ public class DeepseekReasonerChatModel implements ChatModel {
             body.put("model", modelId);
             if (temperature != null) {
                 body.put("temperature", temperature);
+            }
+            if (Boolean.TRUE.equals(thinkEnabled)) {
+                String level = StringUtils.hasText(thinkLevel) ? thinkLevel : "medium";
+                // DeepSeek Reasoner 思考开关；具体含义由上游解释
+                body.put("reasoning", level);
             }
 
             ArrayNode messages = body.putArray("messages");
@@ -114,66 +123,94 @@ public class DeepseekReasonerChatModel implements ChatModel {
     @Override
     public Flux<ChatResponse> stream(Prompt prompt) {
         ChatOptions options = prompt.getOptions();
-        boolean hasTools = false;
-        if (options instanceof ToolCallingChatOptions toolOpts) {
-            Set<String> names =
-                    Optional.ofNullable(toolOpts.getToolNames()).orElse(Set.of());
-            hasTools = !names.isEmpty();
-        }
-
-        // 决策阶段（允许工具调用）：保持单包响应，避免拆分 tool_calls。
-        if (hasTools) {
-            return Flux.just(call(prompt));
-        }
-
-        // 最终续写阶段（禁用工具）：先获取完整响应，再将可见文本拆分成多段伪流式输出。
+        // 决策阶段 / 最终续写阶段：统一走 DeepSeek 的原生流式接口。
         return Flux.defer(() -> {
-            ChatResponse full = call(prompt);
-            if (full == null || full.getResults() == null || full.getResults().isEmpty()) {
-                return Flux.just(full);
+            ObjectNode body = mapper.createObjectNode();
+            body.put("model", modelId);
+            if (temperature != null) {
+                body.put("temperature", temperature);
+            }
+            // 开启上游流式
+            body.put("stream", true);
+            if (Boolean.TRUE.equals(thinkEnabled)) {
+                String level = StringUtils.hasText(thinkLevel) ? thinkLevel : "medium";
+                body.put("reasoning", level);
             }
 
-            Generation gen = full.getResult();
-            if (gen == null || !(gen.getOutput() instanceof AssistantMessage)) {
-                return Flux.just(full);
+            ArrayNode messages = body.putArray("messages");
+            for (Message message : prompt.getInstructions()) {
+                appendMessage(messages, message);
             }
 
-            AssistantMessage am = (AssistantMessage) gen.getOutput();
-            String content = am.getText();
-            Map<String, Object> metadata = am.getMetadata();
+            applyToolsAndChoices(body, prompt.getOptions());
 
-            String reasoning = "";
-            if (metadata != null && !metadata.isEmpty()) {
-                Object v = metadata.getOrDefault("reasoning",
-                        metadata.getOrDefault("reasoning_content", null));
-                if (v != null) {
-                    reasoning = String.valueOf(v);
-                }
-            }
+            return client.post()
+                    .uri("/v1/chat/completions")
+                    .bodyValue(body)
+                    .retrieve()
+                    .bodyToFlux(String.class)
+                    .timeout(Duration.ofMinutes(2))
+                    .flatMap(raw -> {
+                        if (raw == null) {
+                            return Flux.empty();
+                        }
+                        String trimmed = raw.trim();
+                        if (trimmed.isEmpty() || "[DONE]".equalsIgnoreCase(trimmed)) {
+                            return Flux.empty();
+                        }
 
-            String visibleText = content;
-            if ((visibleText == null || visibleText.isEmpty())
-                    && reasoning != null && !reasoning.isEmpty()) {
-                visibleText = reasoning;
-            }
+                        try {
+                            JsonNode root = mapper.readTree(trimmed);
+                            JsonNode choice0 = root.path("choices").path(0);
+                            JsonNode delta = choice0.path("delta");
+                            if (delta == null || delta.isMissingNode()) {
+                                return Flux.empty();
+                            }
 
-            if (visibleText == null || visibleText.isEmpty()) {
-                // 没有可见文本可以拆分时，退回单包
-                return Flux.just(full);
-            }
+                            String contentDelta = delta.path("content").asText("");
 
-            // 拆成较小片段，并加一点点间隔，让前端能明显看到“逐步输出”
-            List<String> chunks = splitText(visibleText, 10);
-            return Flux.fromIterable(chunks)
-                    .delayElements(Duration.ofMillis(40))
-                    .map(part -> {
-                        AssistantMessage partMsg = AssistantMessage.builder()
-                                .content(part)
-                                .properties(metadata != null ? metadata : Collections.emptyMap())
-                                .toolCalls(am.getToolCalls())
-                                .build();
-                        Generation g = new Generation(partMsg);
-                        return new ChatResponse(List.of(g));
+                            // 思考内容增量：优先 "thinking"，其次 "reasoning_content"
+                            String reasoningDelta = extractTextOrJson(delta.path("thinking"));
+                            if (reasoningDelta == null || reasoningDelta.isEmpty()) {
+                                reasoningDelta = extractTextOrJson(delta.path("reasoning_content"));
+                            }
+                            // 兼容部分提供方把 thinking 挂在 choice/message 上的情况
+                            if (reasoningDelta == null || reasoningDelta.isEmpty()) {
+                                reasoningDelta = extractTextOrJson(choice0.path("thinking"));
+                            }
+                            if (reasoningDelta == null || reasoningDelta.isEmpty()) {
+                                reasoningDelta = extractTextOrJson(choice0.path("message").path("thinking"));
+                            }
+
+                            List<AssistantMessage.ToolCall> toolCalls =
+                                    parseToolCalls(delta.path("tool_calls"));
+
+                            if ((contentDelta == null || contentDelta.isEmpty())
+                                    && (reasoningDelta == null || reasoningDelta.isEmpty())
+                                    && toolCalls.isEmpty()) {
+                                // 纯控制帧（仅有 role 等），不向上游发空包
+                                return Flux.empty();
+                            }
+
+                            Map<String, Object> metadata = Collections.emptyMap();
+                            if (reasoningDelta != null && !reasoningDelta.isEmpty()) {
+                                Map<String, Object> meta = new HashMap<>();
+                                meta.put("reasoning", reasoningDelta);
+                                meta.put("reasoning_content", reasoningDelta);
+                                metadata = meta;
+                            }
+
+                            AssistantMessage assistant = AssistantMessage.builder()
+                                    .content(contentDelta)
+                                    .properties(metadata)
+                                    .toolCalls(toolCalls)
+                                    .build();
+                            Generation generation = new Generation(assistant);
+                            return Flux.just(new ChatResponse(List.of(generation)));
+                        } catch (Exception ex) {
+                            log.warn("[DeepSeek-STREAM] failed to parse chunk: {}", ex.toString());
+                            return Flux.empty();
+                        }
                     });
         });
     }
@@ -286,15 +323,17 @@ public class DeepseekReasonerChatModel implements ChatModel {
         return calls;
     }
 
-    private List<String> splitText(String text, int chunkSize) {
-        if (text == null || text.isEmpty() || chunkSize <= 0) {
-            return List.of(text == null ? "" : text);
+    @Nullable
+    private String extractTextOrJson(JsonNode node) {
+        if (node == null || node.isMissingNode() || node.isNull()) {
+            return null;
         }
-        List<String> out = new ArrayList<>();
-        int len = text.length();
-        for (int i = 0; i < len; i += chunkSize) {
-            out.add(text.substring(i, Math.min(len, i + chunkSize)));
+        if (node.isTextual()) {
+            String s = node.asText();
+            return (s == null || s.isEmpty()) ? null : s;
         }
-        return out;
+        String raw = node.toString();
+        return raw.isEmpty() ? null : raw;
     }
+
 }

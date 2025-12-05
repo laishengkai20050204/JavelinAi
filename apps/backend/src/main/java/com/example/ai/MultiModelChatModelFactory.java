@@ -133,6 +133,8 @@ public class MultiModelChatModelFactory {
                 .orElse("deepseek-reasoner");
 
         Double temperature = profile.getTemperature();
+        Boolean thinkEnabled = profile.getThinkEnabled();
+        String thinkLevel = profile.getThinkLevel();
 
         WebClient client = WebClient.builder()
                 .baseUrl(baseUrl)
@@ -142,7 +144,7 @@ public class MultiModelChatModelFactory {
         log.info("[MultiModelChatModelFactory] built DeepSeek Reasoner model baseUrl={} modelId={}",
                 baseUrl, modelId);
 
-        return new DeepseekReasonerChatModel(client, mapper, modelId, temperature);
+        return new DeepseekReasonerChatModel(client, mapper, modelId, temperature, thinkEnabled, thinkLevel);
     }
 
     private ChatModel buildOllamaModel(AiMultiModelProperties.ModelProfile profile) {

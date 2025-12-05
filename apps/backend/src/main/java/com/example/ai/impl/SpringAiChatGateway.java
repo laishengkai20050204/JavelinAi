@@ -210,6 +210,7 @@ public class SpringAiChatGateway implements ChatGateway {
     private static final class StreamDebugAgg {
         private final ObjectMapper mapper;
         private final StringBuilder content = new StringBuilder(4096);
+        private final StringBuilder thinking = new StringBuilder(4096);
         // id 去重；value 结构：{ "id": "...", "type":"function", "function":{ "name":"...", "arguments":"..." } }
         private final LinkedHashMap<String, ObjectNode> toolCalls = new LinkedHashMap<>();
 
@@ -226,6 +227,11 @@ public class SpringAiChatGateway implements ChatGateway {
                     String part = delta.path("content").asText(null);
                     if (part != null && !part.isEmpty()) {
                         content.append(part);
+                    }
+                    // 拼接思考内容
+                    String thinkingPart = delta.path("thinking").asText(null);
+                    if (thinkingPart != null && !thinkingPart.isEmpty()) {
+                        thinking.append(thinkingPart);
                     }
 
                     // 累积 tool_calls
@@ -257,6 +263,7 @@ public class SpringAiChatGateway implements ChatGateway {
             ObjectNode n = mapper.createObjectNode();
             n.put("role", "assistant");
             n.put("content", content.toString());
+            n.put("thinking", thinking.toString());
             if (!toolCalls.isEmpty()) {
                 ArrayNode tcs = n.putArray("tool_calls");
                 toolCalls.values().forEach(tcs::add);
@@ -1002,18 +1009,10 @@ public class SpringAiChatGateway implements ChatGateway {
             }
         }
 
-        // 对于 deepseek-reasoner 等思考模型：
-        // 若 content 为空但 thinking 非空，则让 content 也回退为 thinking，
-        // 保持前端只读 content 时也能看到文字。
-        String visibleContent = content;
-        if ((visibleContent == null || visibleContent.isEmpty()) && thinking != null && !thinking.isEmpty()) {
-            visibleContent = thinking;
-        }
-
         ObjectNode root = mapper.createObjectNode();
         ObjectNode messageNode = root.putObject("message");
         messageNode.put("role", MessageType.ASSISTANT.toString().toLowerCase(Locale.ROOT));
-        messageNode.put("content", visibleContent);
+        messageNode.put("content", content);
         messageNode.put("thinking", thinking);
 
         ArrayNode choices = root.putArray("choices");
@@ -1021,7 +1020,7 @@ public class SpringAiChatGateway implements ChatGateway {
         choice.put("index", 0);
         ObjectNode choiceMessage = choice.putObject("message");
         choiceMessage.put("role", "assistant");
-        choiceMessage.put("content", visibleContent);
+        choiceMessage.put("content", content);
         choiceMessage.put("thinking", thinking);
 
         if (message != null && message.hasToolCalls()) {
@@ -1082,16 +1081,8 @@ public class SpringAiChatGateway implements ChatGateway {
         } catch (Exception ignore) {
         }
 
-        // 同步 formatResponse 的可见内容策略：
-        // 优先用 content；若为空且有 thinking，则用 thinking 作为 content，
-        // 以便 SSE 客户端只读 delta.content 也能看到文本。
-        String visibleContent = content;
-        if ((visibleContent == null || visibleContent.isEmpty()) && thinking != null && !thinking.isEmpty()) {
-            visibleContent = thinking;
-        }
-
-        if (visibleContent != null && !visibleContent.isEmpty()) {
-            delta.put("content", visibleContent);
+        if (content != null && !content.isEmpty()) {
+            delta.put("content", content);
         }
         if (!thinking.isEmpty()) {
             delta.put("thinking", thinking);

@@ -838,6 +838,15 @@ export function useJavelinMinimalChat(): UseJavelinMinimalChatResult {
             for (const c of calls) scheduleClientCall(sid || "", c);
         }
 
+        // 若 NDJSON 带有最终 assistant 文本（例如 DeepSeek Reasoner 的思考+执行结果），
+        // 用它来覆盖当前 draft 文本，避免只依赖 SSE 的 content 增量。
+        if (isRecord(line?.data) && (line.data as any)["type"] === "assistant") {
+            const text = String((line.data as any)["text"] ?? "");
+            if (text) {
+                replaceDraftContent(text);
+            }
+        }
+
         if (
             isRecord(line?.data) &&
             (line.event === "final" ||

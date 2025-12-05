@@ -129,5 +129,17 @@ public class AiMultiModelProperties {
          *  - CURRENT_TOOL_HISTORY_SUMMARY
          */
         private ToolContextRenderMode toolContextRenderMode;
+
+        /**
+         * （可选）是否开启思考模式（若上游支持）。
+         * 例如对 deepseek-reasoner，可以通过它控制是否请求 thinking/reasoning 内容。
+         */
+        private Boolean thinkEnabled;
+
+        /**
+         * （可选）思考强度等级，例如：low / medium / high。
+         * 具体含义由上游模型解释。
+         */
+        private String thinkLevel;
     }
 }

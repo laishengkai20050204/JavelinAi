@@ -61,6 +61,20 @@ public class SpringToolCallPlanFactoryImpl implements ToolCallPlanFactory {
             model = effectiveProps.model();
         }
 
+        // 1b) 是否允许该 profile 使用工具（默认允许；tools-enabled: false 时禁用）
+        boolean toolsEnabled = true;
+        if (StringUtils.hasText(resolvedProfile)) {
+            var runtime = effectiveProps.runtimeProfiles().get(resolvedProfile);
+            if (runtime != null && runtime.getToolsEnabled() != null) {
+                toolsEnabled = runtime.getToolsEnabled();
+            } else {
+                var staticProfile = multiProps.findProfile(resolvedProfile);
+                if (staticProfile != null && staticProfile.getToolsEnabled() != null) {
+                    toolsEnabled = staticProfile.getToolsEnabled();
+                }
+            }
+        }
+
         // 2) Temperature (optional)
         Double temperature = null;
         Object tempObj = payload.get("temperature");
@@ -124,12 +138,21 @@ public class SpringToolCallPlanFactoryImpl implements ToolCallPlanFactory {
             allowed.removeIf(name -> Boolean.FALSE.equals(toggles.get(name)));
         }
 
-        // 9) Final tool definitions (enabled + allowed)
+        // 9) Profile 级别禁用工具：tools-enabled=false 时，彻底关闭本轮工具支持
+        if (!toolsEnabled) {
+            allowed.clear();
+            // 对上游模型不再发送任何 toolChoice，避免触发不支持 function calling 的错误
+            rawToolChoice = null;
+            normalizedToolChoice = normalizeToolChoice(null);
+            forcedFunction = null;
+        }
+
+        // 10) Final tool definitions (enabled + allowed)
         List<ToolCallPlan.ToolDef> finalDefs = mergedDefs.values().stream()
                 .filter(def -> allowed.contains(def.name()))
                 .toList();
 
-        // 10) tool_context
+        // 11) tool_context
         Map<String, Object> toolContext = new LinkedHashMap<>();
         Object scopeUser = payload.get("userId");
         Object scopeConversation = payload.get("conversationId");
