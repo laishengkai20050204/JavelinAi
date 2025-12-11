@@ -124,7 +124,7 @@ ai:
         think-enabled: true
         think-level: high
         tool-context-render-mode: ALL_TOOL
-      deepseek-reasoner-plus:
+      deepseek-speciale:
         provider: deepseek
         base-url: https://api.deepseek.com/v3.2_speciale_expires_on_20251215
         api-key: ${DEEPSEEK_API_KEY}

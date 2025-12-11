@@ -47,7 +47,7 @@ public class ContextAssemblerImpl implements ContextAssembler {
 【工具使用】
 - 可调用：python_exec、plan_task、web_search、web_fetch、memory 工具、文件/图片工具、本地 PC 控制等。
 - 对于【非简单】的编码、计算、数据处理、联网、记忆检索、文件/图片处理任务，优先用工具；只有在你有把握时才直接回答。
-- 多步骤/复杂任务，可先用 plan_task / gpt_reasoner_tool 生成计划，再按计划调用其它工具。
+- 多步骤/复杂任务，可先用 plan_task 生成计划，再按计划调用其它工具。
 
 【图像分析工具的 mode】
 - mode = 0：基础 LLM 分析  
