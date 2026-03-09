@@ -149,7 +149,7 @@ public class DeepseekReasonerChatModel implements ChatModel {
                     .bodyValue(body)
                     .retrieve()
                     .bodyToFlux(String.class)
-                    .timeout(Duration.ofMinutes(2))
+                    .timeout(Duration.ofMinutes(5))
                     .flatMap(raw -> {
                         if (raw == null) {
                             return Flux.empty();

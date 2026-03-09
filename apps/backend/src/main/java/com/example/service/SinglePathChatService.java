@@ -12,6 +12,8 @@ import com.example.service.impl.DecisionServiceSpringAi;
 import com.example.service.impl.DefaultClientResultIngestor;
 import com.example.service.impl.StepContextStore;
 import com.example.util.Fingerprint;
+import com.example.tools.support.ToolStreamContext;
+import com.example.tools.support.ToolStreamObserver;
 import com.example.util.ToolPayloads;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
@@ -396,10 +398,30 @@ public class SinglePathChatService {
         String cid = (req == null ? null : req.conversationId());
 
         return toolPipeline.tryReuse(st.stepId(), call.name(), fp)
-                .switchIfEmpty(
-                        toolPipeline.execute(call, uid, cid)
-                                .flatMap(res -> toolPipeline.record(st.stepId(), callCtx.name(), fp, res).thenReturn(res))
-                )
+                .switchIfEmpty(Mono.defer(() -> {
+                            // 仅在真正执行 SERVER 工具时，绑定一个 ToolStreamObserver，把增量结果推到 SSE 通道
+                            ToolStreamObserver observer = (stepId, toolName, payload) -> {
+                                try {
+                                    Map<String, Object> body = new LinkedHashMap<>();
+                                    body.put("stepId", stepId);
+                                    body.put("tool", toolName);
+                                    if (payload != null) {
+                                        body.putAll(payload);
+                                    }
+                                    emitJsonToSse(stepId, "toolDelta", body);
+                                } catch (Exception e) {
+                                    log.warn("[tools-stream] emit SSE delta failed: stepId={}, tool={}, err={}",
+                                            stepId, toolName, e.toString());
+                                }
+                            };
+                            ToolStreamContext.bind(st.stepId(), observer);
+                            // ★ 用带了 userId/conversationId/step_id 的 callCtx
+                            return toolPipeline.execute(callCtx, uid, cid)
+                                    .doFinally(sig -> ToolStreamContext.unbind(st.stepId()))
+                                    .flatMap(res -> toolPipeline
+                                            .record(st.stepId(), callCtx.name(), fp, res)
+                                            .thenReturn(res));
+                        }))
                 .map(res -> {
                     Object raw = res.data();
 
@@ -433,8 +455,13 @@ public class SinglePathChatService {
                 call.arguments() == null ? Collections.emptyMap() : call.arguments()
         );
         // 仅当缺失时补齐，避免用户显式传入被覆盖
+        args.putIfAbsent("user_id", req.userId());
         args.putIfAbsent("userId", req.userId());
+        args.putIfAbsent("conversation_id", req.conversationId());
         args.putIfAbsent("conversationId", req.conversationId());
+        // ★ 把当前 stepId 也补进去，供工具内部识别和推 SSE
+        args.putIfAbsent("step_id", st.stepId());
+        args.putIfAbsent("stepId", st.stepId());
         return ToolCall.of(call.id(), call.name(), args, call.execTarget());
     }
 

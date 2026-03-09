@@ -87,11 +87,16 @@ public class AiToolExecutor {
                 });
             }
 
-            // 2.5 ★★★ 在这里统一 userId / user_id, conversationId / conversation_id
+
+            // 2.5 ★★★ 在这里统一 userId / user_id, conversationId / conversation_id, stepId / step_id
             Object userIdVal = args.get("userId");
             if (userIdVal == null) userIdVal = args.get("user_id");
+
             Object convIdVal = args.get("conversationId");
             if (convIdVal == null) convIdVal = args.get("conversation_id");
+
+            Object stepIdVal = args.get("step_id");
+            if (stepIdVal == null) stepIdVal = args.get("stepId");
 
             if (userIdVal != null) {
                 args.put("userId", userIdVal);
@@ -101,6 +106,11 @@ public class AiToolExecutor {
                 args.put("conversationId", convIdVal);
                 args.put("conversation_id", convIdVal);
             }
+            if (stepIdVal != null) {
+                args.put("step_id", stepIdVal);
+                args.put("stepId", stepIdVal);
+            }
+
 
             // 3) 现在再读 userId / conversationId，保证这俩一定是归一化后的值
             String userId = Objects.toString(args.get("userId"), null);

@@ -6,6 +6,8 @@ import com.example.api.dto.ToolResult;
 import com.example.config.AiProperties;
 import com.example.config.EffectiveProps;
 import com.example.tools.AiTool;
+import com.example.tools.support.ToolStreamContext;
+import com.example.tools.support.ToolStreamObserver;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -143,7 +145,11 @@ public class SpecialeExpertTool implements AiTool, ApplicationContextAware {
                 args.get("conversation_id"),
                 asString(args.get("conversationId"), UUID.randomUUID().toString())
         );
-        String stepId = asString(args.get("step_id"), null);
+        String stepId = asString(
+                args.get("stepId"),
+                asString(args.get("step_id"), null)
+        );
+
 
         String profileName = asString(args.get("profile"), DEFAULT_PROFILE);
         String modelOverride = asString(args.get("model"), null);
@@ -182,21 +188,28 @@ public class SpecialeExpertTool implements AiTool, ApplicationContextAware {
             payload.put("stepId", stepId);
         }
 
+        ToolStreamObserver streamObserver = ToolStreamContext.getObserver(stepId); // ★按 stepId 取
+
         AiProperties.Mode mode =
                 (effectiveProps != null ? effectiveProps.mode() : AiProperties.Mode.OPENAI);
         Long timeoutMs = (effectiveProps != null ? effectiveProps.clientTimeoutMs() : null);
 
         // 全局基础超时（比如你 application.yaml 里配置的 clientTimeoutMs）
-        long baseTimeoutMs = (timeoutMs != null && timeoutMs > 0) ? timeoutMs : 120_000L;
+        long baseTimeoutMs = (timeoutMs != null && timeoutMs > 0) ? timeoutMs : 300_000L;
 
         // 1) 整体上限：Speciale 至少给 3 分钟；如果全局配置更长，就用更长
-        long overallTimeoutMs = Math.max(baseTimeoutMs, 180_000L);  // 3 * 60 * 1000
+        long overallTimeoutMs = Math.max(baseTimeoutMs, 30 * 60_000L);  // 3 * 60 * 1000
 
         // 2) token 间隔（空闲）超时：比如 30 秒没 token 就认为挂了
         long idleTimeoutMs = 30_000L;
 
         log.info("[speciale] calling gateway(stream): profile={}, modelOverride={}, mode={}, overallTimeoutMs={} idleTimeoutMs={}",
                 profileName, modelOverride, mode, overallTimeoutMs, idleTimeoutMs);
+        log.warn("[speciale][CTX] thread={} stepId={} userId={} convId={} profile={} modelOverride={} mode={} observerPresent={} timeoutMs(base)={}",
+                Thread.currentThread().getName(),
+                stepId, userId, conversationId, profileName, modelOverride, mode,
+                (streamObserver != null),
+                timeoutMs);
 
         long start = System.currentTimeMillis();
 
@@ -205,41 +218,100 @@ public class SpecialeExpertTool implements AiTool, ApplicationContextAware {
         java.util.List<String> chunks;
 
         try {
+            var chunkSeq = new java.util.concurrent.atomic.AtomicInteger(0);
+            var firstAt  = new java.util.concurrent.atomic.AtomicLong(0L);
+            var lastAt   = new java.util.concurrent.atomic.AtomicLong(0L);
+
             chunks = chatGateway()
                     .stream(payload, mode)
-                    // ★ 首个 token 最长等 overallTimeoutMs，之后每个 token 间隔不能超过 idleTimeoutMs
+                    .doOnSubscribe(s -> log.warn("[speciale][STREAM] subscribed stepId={} thread={}",
+                            stepId, Thread.currentThread().getName()))
+                    .doOnNext(chunk -> {
+                        int n = chunkSeq.incrementAndGet();
+                        long now = System.currentTimeMillis();
+                        lastAt.set(now);
+                        if (firstAt.get() == 0L) {
+                            firstAt.set(now);
+                            log.warn("[speciale][STREAM] first-chunk stepId={} after={}ms sample={}",
+                                    stepId, (now - start), truncate(chunk, 220));
+                        } else if (n <= 5 || n % 50 == 0) {
+                            log.debug("[speciale][STREAM] chunk#{} stepId={} sample={}",
+                                    n, stepId, truncate(chunk, 220));
+                        }
+
+                        // ===== 解析 delta =====
+                        JsonNode root;
+                        try {
+                            root = objectMapper.readTree(chunk);
+                        } catch (Exception ex) {
+                            if (n <= 5) {
+                                log.warn("[speciale][PARSE] invalid json stepId={} ex={} sample={}",
+                                        stepId, ex.toString(), truncate(chunk, 220));
+                            }
+                            return;
+                        }
+
+                        JsonNode delta = root.path("choices").path(0).path("delta");
+                        if (delta.isMissingNode() || delta.isNull()) {
+                            if (n <= 5) {
+                                log.warn("[speciale][PARSE] missing delta stepId={} sample={}",
+                                        stepId, truncate(chunk, 220));
+                            }
+                            return;
+                        }
+
+                        String part = delta.path("content").asText(null);
+                        String thinkingPart = delta.path("thinking").asText(null);
+
+                        if (!StringUtils.hasText(part) && !StringUtils.hasText(thinkingPart)) {
+                            JsonNode toolCalls = delta.path("tool_calls");
+                            if (toolCalls.isArray() && toolCalls.size() > 0 && n <= 5) {
+                                log.warn("[speciale][PARSE] tool_calls-only stepId={} toolCallsSample={}",
+                                        stepId, truncate(toolCalls.toString(), 220));
+                            } else if (n <= 5) {
+                                log.warn("[speciale][PARSE] empty delta stepId={} deltaSample={}",
+                                        stepId, truncate(delta.toString(), 220));
+                            }
+                            return;
+                        }
+
+                        if (StringUtils.hasText(part)) contentBuf.append(part);
+                        if (StringUtils.hasText(thinkingPart)) thinkingBuf.append(thinkingPart);
+
+                        ToolStreamObserver obs = (streamObserver != null)
+                                ? streamObserver
+                                : (StringUtils.hasText(stepId) ? ToolStreamContext.getObserver(stepId) : null);
+
+                        if (obs == null) {
+                            if (n <= 3) log.warn("[speciale][SSE] observer NULL, cannot emit stepId={}", stepId);
+                            return;
+                        }
+
+                        Map<String, Object> deltaPayload = new LinkedHashMap<>(4);
+                        deltaPayload.put("contentDelta", part);         // 允许 null
+                        deltaPayload.put("thinkingDelta", thinkingPart);
+
+                        obs.onDelta(stepId, name(), deltaPayload);
+
+
+                    })
+                    .doOnError(e -> log.error("[speciale][STREAM] error stepId={} after={}ms chunks={} lastGapMs={} ex={}",
+                            stepId,
+                            (System.currentTimeMillis() - start),
+                            chunkSeq.get(),
+                            (lastAt.get() == 0L ? -1 : (System.currentTimeMillis() - lastAt.get())),
+                            e.toString(), e))
+                    .doFinally(sig -> log.warn("[speciale][STREAM] finally stepId={} signal={} chunks={} firstAt={}ms total={}ms",
+                            stepId, sig, chunkSeq.get(),
+                            (firstAt.get() == 0L ? -1 : (firstAt.get() - start)),
+                            (System.currentTimeMillis() - start)))
                     .timeout(
                             Duration.ofMillis(overallTimeoutMs),
-                            item -> Mono.delay(Duration.ofMillis(idleTimeoutMs))
+                            __ -> Mono.delay(Duration.ofMillis(idleTimeoutMs))
                     )
-                    .doOnNext(chunk -> {
-                        try {
-                            JsonNode root = objectMapper.readTree(chunk);
-                            JsonNode delta = root
-                                    .path("choices")
-                                    .path(0)
-                                    .path("delta");
-
-                            if (delta == null || delta.isMissingNode() || delta.isNull()) {
-                                return;
-                            }
-
-                            String part = delta.path("content").asText(null);
-                            if (StringUtils.hasText(part)) {
-                                contentBuf.append(part);
-                            }
-
-                            String thinkingPart = delta.path("thinking").asText(null);
-                            if (StringUtils.hasText(thinkingPart)) {
-                                thinkingBuf.append(thinkingPart);
-                            }
-                        } catch (Exception parseEx) {
-                            log.warn("[speciale] failed to parse stream chunk: {}", parseEx.toString());
-                        }
-                    })
                     .collectList()
-                    // ★ 这里就不用再传 Duration 了，整体超时已经靠上面的 firstTimeout 控制
                     .block();
+
 
         } catch (Exception e) {
             log.error("[speciale] gateway stream exception", e);
@@ -420,4 +492,6 @@ public class SpecialeExpertTool implements AiTool, ApplicationContextAware {
         String t = s.trim();
         return t.length() <= max ? t : t.substring(0, max) + "...";
     }
+
+
 }

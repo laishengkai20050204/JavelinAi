@@ -1072,7 +1072,9 @@ export function useJavelinMinimalChat(): UseJavelinMinimalChatResult {
                 setBusy(false);
             };
 
-            (["decision", "clientCalls", "tools", "status", "finished", "error"] as const).forEach(
+            (
+                ["decision", "clientCalls", "tools", "status", "finished", "error", "toolDelta"] as const
+            ).forEach(
                 (name) => {
                     es.addEventListener(name, (ev: MessageEvent) => {
                         if (name === "clientCalls") {
@@ -1082,11 +1084,27 @@ export function useJavelinMinimalChat(): UseJavelinMinimalChatResult {
                                     ? payload.calls
                                     : Array.isArray(payload)
                                         ? payload
-                                        : [payload];
+                                    : [payload];
                                 for (const c of list) scheduleClientCall(stepId, c);
                             } catch {
                                 // ignore
                             }
+                        } else if (name === "toolDelta") {
+                            let payload: any;
+                            try {
+                                payload = JSON.parse(ev.data);
+                            } catch {
+                                payload = { raw: ev.data };
+                            }
+                            setEvents((prev) => [
+                                ...prev,
+                                {
+                                    event: "sse-toolDelta",
+                                    ts: Date.now(),
+                                    data: payload,
+                                },
+                            ]);
+                            return;
                         }
                         setEvents((prev) => [
                             ...prev,

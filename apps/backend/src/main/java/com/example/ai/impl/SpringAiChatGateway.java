@@ -101,7 +101,7 @@ public class SpringAiChatGateway implements ChatGateway {
         Prompt prompt = pp.prompt();
         ToolCallPlan plan = pp.plan();
 
-        // 请求预览（用于日�?/ 错误信息�?
+        // 请求预览
         ObjectNode reqPreview = logOutgoingPayloadJson(prompt, plan, payload, mode);
 
         try {
@@ -405,7 +405,7 @@ public class SpringAiChatGateway implements ChatGateway {
         for (ToolCallPlan.ToolDef def : defs) {
             if (!allowed.contains(def.name())) continue;
             if (!"client".equalsIgnoreCase(def.execTarget())) continue;
-            if (serverNames.contains(def.name())) continue; // 有同名服务端实现则不再占�?
+            if (serverNames.contains(def.name())) continue;
             out.add(new FrontendDefinitionCallback(def));
         }
         return out;
