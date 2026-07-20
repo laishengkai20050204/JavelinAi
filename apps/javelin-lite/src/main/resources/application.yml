@@ -1,0 +1,10 @@
+spring:
+  application:
+    name: javelin-lite
+
+server:
+  port: 8081
+
+logging:
+  level:
+    com.example.javelinlite: INFO
