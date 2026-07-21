@@ -32,34 +32,32 @@ class ModelDecisionServiceTest {
     @SuppressWarnings("unchecked")
     void parsesToolCallsAndReplaysTheOpenAiToolMessageSequence() throws Exception {
         ObjectMapper mapper = new ObjectMapper();
-        JsonNode toolCallResponse = mapper.readTree("""
-                {
-                  "choices": [{
-                    "message": {
-                      "role": "assistant",
-                      "content": null,
-                      "tool_calls": [{
-                        "id": "call-time-1",
-                        "type": "function",
-                        "function": {
-                          "name": "get_server_time",
-                          "arguments": "{\"zoneId\":\"Asia/Shanghai\"}"
-                        }
-                      }]
-                    }
-                  }]
-                }
-                """);
-        JsonNode finalResponse = mapper.readTree("""
-                {
-                  "choices": [{
-                    "message": {
-                      "role": "assistant",
-                      "content": "现在是测试时间。"
-                    }
-                  }]
-                }
-                """);
+
+        Map<String, Object> modelMessage = new LinkedHashMap<>();
+        modelMessage.put("role", "assistant");
+        modelMessage.put("content", null);
+        modelMessage.put("tool_calls", List.of(Map.of(
+                "id", "call-time-1",
+                "type", "function",
+                "function", Map.of(
+                        "name", "get_server_time",
+                        "arguments", mapper.writeValueAsString(Map.of(
+                                "zoneId", "Asia/Shanghai"
+                        ))
+                )
+        )));
+        JsonNode toolCallResponse = mapper.valueToTree(Map.of(
+                "choices", List.of(Map.of("message", modelMessage))
+        ));
+
+        JsonNode finalResponse = mapper.valueToTree(Map.of(
+                "choices", List.of(Map.of(
+                        "message", Map.of(
+                                "role", "assistant",
+                                "content", "现在是测试时间。"
+                        )
+                ))
+        ));
 
         List<Map<String, Object>> capturedPayloads = new ArrayList<>();
         AtomicInteger calls = new AtomicInteger();
