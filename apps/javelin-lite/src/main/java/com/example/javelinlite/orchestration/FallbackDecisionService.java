@@ -3,6 +3,7 @@ package com.example.javelinlite.orchestration;
 import com.example.javelinlite.api.ChatRequest;
 import com.example.javelinlite.api.ToolCall;
 import com.example.javelinlite.api.ToolResult;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
 
@@ -11,22 +12,28 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * Temporary deterministic implementation used only to keep the extracted project runnable.
- * Replace this class with the adapted Spring AI decision service from the full JavelinAI project.
+ * Deterministic local fallback. It is active only while real model access is disabled.
  */
 @Service
+@ConditionalOnProperty(
+        name = "javelin-lite.model.enabled",
+        havingValue = "false",
+        matchIfMissing = true
+)
 public final class FallbackDecisionService implements DecisionService {
 
     @Override
     public Mono<Decision> decide(
             ChatRequest request,
-            List<ToolResult> previousToolResults,
+            List<ToolExchange> previousToolExchanges,
             int round
     ) {
-        if (!previousToolResults.isEmpty()) {
-            ToolResult latest = previousToolResults.get(previousToolResults.size() - 1);
+        if (!previousToolExchanges.isEmpty()) {
+            ToolResult latest = previousToolExchanges
+                    .get(previousToolExchanges.size() - 1)
+                    .result();
             return Mono.just(Decision.reply(
-                    "[Javelin Lite temporary decision service] Tool result: " + latest.data()
+                    "[Javelin Lite fallback] Tool result: " + latest.data()
             ));
         }
 
@@ -43,7 +50,7 @@ public final class FallbackDecisionService implements DecisionService {
         }
 
         return Mono.just(Decision.reply(
-                "[Javelin Lite temporary decision service] " + question
+                "[Javelin Lite fallback] " + question
         ));
     }
 }
