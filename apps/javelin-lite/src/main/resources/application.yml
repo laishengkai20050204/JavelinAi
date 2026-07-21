@@ -1,0 +1,36 @@
+spring:
+  application:
+    name: javelin-lite
+
+server:
+  port: 8081
+
+javelin-lite:
+  model:
+    enabled: ${JAVELIN_LITE_MODEL_ENABLED:false}
+    base-url: ${JAVELIN_LITE_BASE_URL:https://openrouter.ai/api/v1}
+    api-key: ${JAVELIN_LITE_API_KEY:}
+    model: ${JAVELIN_LITE_MODEL:}
+    temperature: ${JAVELIN_LITE_TEMPERATURE:0.8}
+    timeout: ${JAVELIN_LITE_TIMEOUT:120s}
+
+  web-search:
+    enabled: ${JAVELIN_LITE_WEB_SEARCH_ENABLED:false}
+    base-url: ${JAVELIN_LITE_SERPER_BASE_URL:https://google.serper.dev}
+    api-key: ${SERPER_API_KEY:}
+    default-top-k: ${JAVELIN_LITE_SEARCH_TOP_K:5}
+    default-lang: ${JAVELIN_LITE_SEARCH_LANG:zh-cn}
+    default-country: ${JAVELIN_LITE_SEARCH_COUNTRY:cn}
+    timeout: ${JAVELIN_LITE_SEARCH_TIMEOUT:20s}
+
+  web-fetch:
+    enabled: ${JAVELIN_LITE_WEB_FETCH_ENABLED:true}
+    user-agent: ${JAVELIN_LITE_WEB_FETCH_USER_AGENT:JavelinLite/1.0}
+    default-max-chars: ${JAVELIN_LITE_WEB_FETCH_MAX_CHARS:20000}
+    max-in-memory-bytes: ${JAVELIN_LITE_WEB_FETCH_MAX_BYTES:2097152}
+    ssrf-guard-enabled: ${JAVELIN_LITE_WEB_FETCH_SSRF_GUARD:true}
+    timeout: ${JAVELIN_LITE_WEB_FETCH_TIMEOUT:20s}
+
+logging:
+  level:
+    com.example.javelinlite: INFO
