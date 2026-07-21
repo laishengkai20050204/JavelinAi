@@ -5,6 +5,15 @@ spring:
 server:
   port: 8081
 
+javelin-lite:
+  model:
+    enabled: ${JAVELIN_LITE_MODEL_ENABLED:false}
+    base-url: ${JAVELIN_LITE_BASE_URL:https://openrouter.ai/api/v1}
+    api-key: ${JAVELIN_LITE_API_KEY:}
+    model: ${JAVELIN_LITE_MODEL:}
+    temperature: ${JAVELIN_LITE_TEMPERATURE:0.8}
+    timeout: ${JAVELIN_LITE_TIMEOUT:120s}
+
 logging:
   level:
     com.example.javelinlite: INFO
