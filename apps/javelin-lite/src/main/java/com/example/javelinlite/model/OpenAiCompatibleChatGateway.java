@@ -29,7 +29,7 @@ public final class OpenAiCompatibleChatGateway implements ChatGateway {
     ) {
         this.properties = properties;
 
-        WebClient.Builder configuredBuilder = webClientBuilder
+        WebClient.Builder configuredBuilder = webClientBuilder.clone()
                 .baseUrl(properties.baseUrl())
                 .defaultHeader(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
                 .defaultHeader(HttpHeaders.ACCEPT, MediaType.APPLICATION_JSON_VALUE);
