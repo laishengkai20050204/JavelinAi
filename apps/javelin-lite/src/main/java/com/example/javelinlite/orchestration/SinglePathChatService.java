@@ -45,7 +45,7 @@ public final class SinglePathChatService {
     private Flux<StepEvent> loop(
             ChatRequest request,
             String stepId,
-            List<ToolResult> previousToolResults,
+            List<ToolExchange> previousToolExchanges,
             int round
     ) {
         if (round >= MAX_ROUNDS) {
@@ -54,7 +54,7 @@ public final class SinglePathChatService {
             ));
         }
 
-        return decisionService.decide(request, previousToolResults, round)
+        return decisionService.decide(request, previousToolExchanges, round)
                 .flatMapMany(decision -> {
                     if (!decision.requiresTools()) {
                         if (decision.assistantText().isBlank()) {
@@ -69,12 +69,16 @@ public final class SinglePathChatService {
                     return executeTools(request, decision.toolCalls())
                             .collectList()
                             .flatMapMany(executions -> {
-                                List<ToolResult> allResults = new ArrayList<>(
-                                        previousToolResults
+                                List<ToolExchange> allExchanges = new ArrayList<>(
+                                        previousToolExchanges
                                 );
-                                executions.stream()
-                                        .map(ToolExecution::result)
-                                        .forEach(allResults::add);
+                                for (ToolExecution execution : executions) {
+                                    allExchanges.add(new ToolExchange(
+                                            round,
+                                            execution.call(),
+                                            execution.result()
+                                    ));
+                                }
 
                                 Flux<StepEvent> toolEvents = Flux.fromIterable(executions)
                                         .concatMap(execution -> Flux.just(
@@ -87,7 +91,7 @@ public final class SinglePathChatService {
                                         loop(
                                                 request,
                                                 stepId,
-                                                List.copyOf(allResults),
+                                                List.copyOf(allExchanges),
                                                 round + 1
                                         )
                                 );
