@@ -17,6 +17,8 @@
 - 直接 Java 方法调用与可选 NDJSON HTTP 包装
 - 无模型配置时可用于测试的本地 fallback
 
+这里没有直接复制原项目超过千行、并且依赖 SSE、数据库、多模型路由和客户端工具状态的 `SpringAiChatGateway`。精简版保留了原 JavelinAI 的 `DecisionService -> ChatGateway -> provider` 分层，同时用轻量 OpenAI-compatible Gateway 完成真实模型调用。
+
 尚未迁入：
 
 - 会话记忆与数据库
